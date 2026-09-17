@@ -1,0 +1,11 @@
+# everything heavy is downloaded at setup time, never committed
+.venv/
+venv/
+dist/
+build/
+*.spec
+models/
+*.wav
+__pycache__/
+*.pyc
+.pytest_cache/
