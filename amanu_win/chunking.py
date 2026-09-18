@@ -26,12 +26,17 @@ def chunk_bounds(duration_s: float,
         return bounds
     end = min(first_s, duration_s)
     bounds.append((0.0, end))
-    start = end - overlap_s
-    # a next chunk only exists if it carries new audio past the overlap
-    while start + overlap_s < duration_s:
-        end = min(start + first_s, duration_s)
-        bounds.append((start, end))
-        start = end - overlap_s
+    # advance by stride (never by end-overlap: float cancellation turned
+    # (d-2)+2 < d into an infinite loop on sub-overlap durations)
+    stride_s = max(stride_s, 1e-3)
+    while bounds[-1][1] < duration_s - 1e-6:
+        start = bounds[-1][0] + stride_s
+        if start >= duration_s - 1e-6:
+            break
+        new_end = min(start + first_s, duration_s)
+        if new_end <= bounds[-1][1]:
+            break  # no new audio beyond current coverage
+        bounds.append((start, new_end))
     return bounds
 
 

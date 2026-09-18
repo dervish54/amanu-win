@@ -53,3 +53,27 @@ def test_tap_finish_flushes_tail():
     # finishing twice must not double-emit
     tap.finish()
     assert [(c.start_s, c.end_s) for c in emitted] == bounds
+
+
+def test_short_recording_terminates():
+    # incident 2026.09.18-1905: buffered 0.234s -> 0.234 - 2 + 2 == 0.234
+    # by float cancellation made the loop spin until MemoryError
+    import threading
+    result = {}
+
+    def run():
+        result["bounds"] = chunk_bounds(0.234)
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert "bounds" in result, "chunk_bounds hung on a sub-overlap duration"
+    assert result["bounds"] == [(0.0, 0.234)]
+
+
+def test_short_recording_tap_finish_terminates():
+    emitted = []
+    tap = ChunkTap(sample_rate=48000, on_chunk=emitted.append)
+    tap.feed(np.zeros(11232, dtype=np.int16))  # exactly the incident frames
+    tap.finish()
+    assert [(c.start_s, c.end_s) for c in emitted] == [(0.0, 11232 / 48000)]
