@@ -29,6 +29,12 @@ DEFAULTS: dict = {
         "device": "cuda",            # cuda | cpu
         "mic_speaker": "Микрофон",
         "system_speaker": "Собеседник",
+        "streaming": {
+            "enabled": True,         # transcribe mic chunks live, stitch via LLM at stop
+            "first_s": 10.0,
+            "stride_s": 8.0,
+            "overlap_s": 2.0,
+        },
     },
     "summary": {
         "enabled": True,

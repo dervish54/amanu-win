@@ -93,12 +93,19 @@ def _wasapi_default_input():
 
 
 class StereoRecorder:
-    def __init__(self, out_path: Path):
+    def __init__(self, out_path: Path, mic_tap=None):
         self.out_path = out_path
+        # mic_tap: optional callable fed every mic frame batch (int16, native
+        # rate) for live chunk transcription; assigned before start()
+        self.mic_tap = mic_tap
+        picked = _wasapi_default_input()
+        self._mic_pick = picked  # resolved once so tap and stream agree
         self.info = CaptureInfo(
             mic_device=default_mic_name() or "unavailable",
             system_device=default_loopback_name() or "unavailable",
         )
+        if picked:
+            self.info.mic_rate = picked[1]
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._stream = None
@@ -140,15 +147,14 @@ class StereoRecorder:
 
     # -- capture sides -----------------------------------------------------------
     def _start_mic(self):
-        picked = _wasapi_default_input()
         try:
             dev = sd.query_devices(kind="input")
             rate = int(dev["default_samplerate"])
         except Exception:
             rate = ARCHIVE_RATE
         device = None
-        if picked:
-            device, rate = picked
+        if self._mic_pick:
+            device, rate = self._mic_pick
         self._sf_mic = sf.SoundFile(
             str(self._tmp(".mic")), mode="w", samplerate=rate,
             channels=1, subtype="PCM_16",
@@ -160,7 +166,13 @@ class StereoRecorder:
                 self._sf_mic.write(indata)
             except Exception as e:
                 self.error = f"mic write failed: {e}"
+            if self.mic_tap is not None:
+                try:
+                    self.mic_tap(indata.copy())
+                except Exception:
+                    pass  # a tap bug must never disturb the archive write
             return
+
 
         try:
             self._stream = sd.InputStream(

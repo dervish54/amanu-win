@@ -64,10 +64,15 @@ def transcribe_channels(
     mic_label: str,
     system_label: str,
     log=lambda msg: None,
+    include_mic: bool = True,
 ):
-    """Returns (segments, info_dict). segments: [{start,end,speaker,text}] sorted."""
+    """Returns (segments, info_dict). segments: [{start,end,speaker,text}] sorted.
+    include_mic=False transcribes only the system (far-end) channel — used
+    when the mic side already came in live via streaming chunks."""
     audio, sr = sf.read(str(wav_path), dtype="float32", always_2d=True)
-    channels = [(mic_label, audio[:, 0]), (system_label, audio[:, 1])]
+    channels = [(system_label, audio[:, 1])]
+    if include_mic:
+        channels.insert(0, (mic_label, audio[:, 0]))
     segments: list[dict] = []
     prov = {}
     lang = language if language and language != "auto" else None
