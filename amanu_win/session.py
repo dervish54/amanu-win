@@ -11,6 +11,10 @@ With streaming enabled, the mic channel is transcribed live in overlapping
 chunks while the recording runs; at stop only the tail is left, then the
 LLM stitches the fragments into the punctuated whole text that gets pasted.
 The far end is always transcribed from the archive after the stop.
+
+stop() never waits on transcription: live fragment finalization happens on
+the processing thread, because the caller of stop() is the keyboard hook —
+blocking it would freeze the global hotkey.
 """
 from __future__ import annotations
 
@@ -104,10 +108,8 @@ class SessionManager:
         if not self.recorder:
             raise RuntimeError("not recording")
         info = self.recorder.stop()
-        fragments = None
-        if self._live is not None:
-            fragments = self._live.finish()
-            self._live = None
+        live = self._live
+        self._live = None
         d = self.session_dir
         self.recorder = None
         meta = {
@@ -123,22 +125,30 @@ class SessionManager:
             "trigger": "hotkey",
             "processing": {"transcript": "pending", "summary": "pending"},
         }
-        if fragments:
-            meta["streaming"] = {"fragments": len(fragments)}
         if info.error:
             meta["capture_error"] = info.error
+        if info.warnings:
+            meta["capture_warnings"] = info.warnings
+            self.log("capture warnings: " + "; ".join(info.warnings))
         (d / "meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        # live.finish() can take many seconds (model load + tail chunk) — it
+        # belongs to the processing thread, never to the caller of stop()
         threading.Thread(target=self.process, args=(d,),
-                         kwargs={"fragments": fragments}, daemon=True).start()
+                         kwargs={"live": live}, daemon=True).start()
         return d
 
     # -- post-processing ----------------------------------------------------------
-    def process(self, session_dir: Path, fragments: list[dict] | None = None) -> None:
+    def process(self, session_dir: Path, fragments: list[dict] | None = None,
+                live: "LiveMicTranscriber | None" = None) -> None:
         self.processing.set()
         self._notify()
         try:
+            if live is not None:
+                self.stage = "finishing chunks"
+                self._notify()
+                fragments = live.finish()
             self._process_locked(session_dir, fragments)
         finally:
             self.stage = ""

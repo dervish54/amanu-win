@@ -136,6 +136,30 @@ class TrayApp:
         os.startfile(self.config.recordings_dir)
 
     # -- run ---------------------------------------------------------------------
+    def _register_hotkey(self) -> None:
+        # edge-triggered by hand: keyboard.add_hotkey(trigger_on_release=...)
+        # silently never fires for multi-key combos in keyboard 0.13.5, and
+        # press-triggered combos re-toggle under Windows auto-repeat. Arm on
+        # first key-down with modifiers held; rearm only on key release.
+        parts = self.config.hotkey.lower().replace(" ", "").split("+")
+        self._hk_mods, self._hk_key = parts[:-1], parts[-1]
+        self._hk_armed = False
+        keyboard.on_press_key(self._hk_key, self._on_hk_press)
+        keyboard.on_release_key(self._hk_key, self._on_hk_release)
+
+    def _on_hk_press(self, event) -> None:
+        if self._hk_armed:
+            return
+        try:
+            if all(keyboard.is_pressed(m) for m in self._hk_mods):
+                self._hk_armed = True
+                self.toggle()
+        except Exception as e:
+            self._log(f"hotkey error: {e}")
+
+    def _on_hk_release(self, event) -> None:
+        self._hk_armed = False
+
     def run(self) -> None:
-        keyboard.add_hotkey(self.config.hotkey, self.toggle)
+        self._register_hotkey()
         self.icon.run()

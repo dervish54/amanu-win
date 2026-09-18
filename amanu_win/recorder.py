@@ -36,6 +36,7 @@ class CaptureInfo:
     started_at: float = 0.0
     stopped_at: float = 0.0
     error: str | None = None
+    warnings: list = None
 
 
 def default_mic_name() -> str | None:
@@ -111,6 +112,8 @@ class StereoRecorder:
         self._stream = None
         self._sf_mic = None
         self._sf_sys = None
+        self._mic_frames = 0
+        self._sys_frames = 0
         self.error: str | None = None
 
     # -- public API ------------------------------------------------------------
@@ -134,6 +137,12 @@ class StereoRecorder:
             t.join(timeout=5)
         self.info.stopped_at = time.time()
         self.info.error = self.error
+        self.info.warnings = capture_warnings(
+            mic_frames=self._mic_frames, mic_rate=self.info.mic_rate or ARCHIVE_RATE,
+            sys_frames=self._sys_frames, sys_rate=self.info.system_rate or ARCHIVE_RATE,
+            wall_s=self.info.stopped_at - self.info.started_at,
+            mic_opened=self._stream is not None,
+            sys_opened=self._sf_sys is not None)
         # close the capture-side files first: on Windows a file cannot be
         # read/removed while a SoundFile still holds it open
         for s in (self._sf_mic, self._sf_sys):
@@ -164,6 +173,7 @@ class StereoRecorder:
         def cb(indata, frames, time_info, status):
             try:
                 self._sf_mic.write(indata)
+                self._mic_frames += len(indata)
             except Exception as e:
                 self.error = f"mic write failed: {e}"
             if self.mic_tap is not None:
@@ -212,7 +222,9 @@ class StereoRecorder:
 
             def cb(in_data, frame_count, time_info, status_flags):
                 try:
-                    sf_sys.write(np.frombuffer(in_data, dtype=np.int16))
+                    data = np.frombuffer(in_data, dtype=np.int16)
+                    sf_sys.write(data)
+                    self._sys_frames += len(data)
                 except Exception as e:
                     self.error = f"loopback write failed: {e}"
                 return None, pyaudio.paContinue
@@ -292,3 +304,26 @@ class StereoRecorder:
                         s.close()
                 except Exception:
                     pass
+
+
+def capture_warnings(mic_frames: int, mic_rate: int,
+                     sys_frames: int, sys_rate: int,
+                     wall_s: float,
+                     mic_opened: bool = True,
+                     sys_opened: bool = True) -> list[str]:
+    """Flag streams that stalled: opened but delivered <50% of wall time.
+
+    A stream that dies mid-recording (e.g. a virtual mic that needs its
+    host app) otherwise leaves an archive that looks valid but is mostly
+    silence; surface it in meta.json instead of discovering it by ear.
+    """
+    warns: list[str] = []
+    if wall_s <= 0:
+        return warns
+    mic_s = mic_frames / max(mic_rate, 1)
+    sys_s = sys_frames / max(sys_rate, 1)
+    if mic_opened and mic_s < 0.5 * wall_s:
+        warns.append(f"mic delivered only {mic_s:.1f}s of {wall_s:.0f}s recording — check the microphone device")
+    if sys_opened and sys_s < 0.5 * wall_s:
+        warns.append(f"system loopback delivered only {sys_s:.1f}s of {wall_s:.0f}s recording")
+    return warns
