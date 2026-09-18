@@ -6,6 +6,7 @@ so the app is fully usable without the keyboard.
 from __future__ import annotations
 
 import io
+import queue
 import threading
 import time
 import tkinter as tk
@@ -64,6 +65,16 @@ class TrayApp:
         )
         self._toggle_lock = threading.Lock()
         self._last_toggle = 0.0
+        # the hotkey hook thread must never run toggle work itself — device
+        # open/close can take seconds on flaky drivers; a single serial
+        # worker carries it
+        self._work_q = queue.Queue()
+        self._pending = None
+        self._hk_armed = False
+        self._hk_mods, self._hk_key = [], "r"
+        self._worker = threading.Thread(target=self._work_loop,
+                                        name="toggle-worker", daemon=True)
+        self._worker.start()
 
     def _log(self, msg: str) -> None:
         # Windows consoles are often cp1251; unencodable chars must never
@@ -75,7 +86,9 @@ class TrayApp:
 
     # -- state ---------------------------------------------------------------
     def _refresh(self) -> None:
-        if self.sessions.is_recording:
+        if self._pending:
+            color, title = BUSY, f"Amanu — {self._pending}…"
+        elif self.sessions.is_recording:
             color, title = RECORDING, "Amanu — RECORDING (Ctrl+Alt+R to stop)"
         elif self.sessions.processing.is_set():
             color, title = BUSY, f"Amanu — {self.sessions.stage or 'processing'}…"
@@ -143,7 +156,6 @@ class TrayApp:
         # first key-down with modifiers held; rearm only on key release.
         parts = self.config.hotkey.lower().replace(" ", "").split("+")
         self._hk_mods, self._hk_key = parts[:-1], parts[-1]
-        self._hk_armed = False
         keyboard.on_press_key(self._hk_key, self._on_hk_press)
         keyboard.on_release_key(self._hk_key, self._on_hk_release)
 
@@ -153,9 +165,25 @@ class TrayApp:
         try:
             if all(keyboard.is_pressed(m) for m in self._hk_mods):
                 self._hk_armed = True
-                self.toggle()
+                self._pending = ("stop" if self.sessions.is_recording
+                                 else "start")
+                self._schedule_refresh()
+                self._work_q.put("toggle")
         except Exception as e:
             self._log(f"hotkey error: {e}")
+
+    def _work_loop(self) -> None:
+        while True:
+            item = self._work_q.get()
+            if item is None:
+                return
+            try:
+                self.toggle()
+            except Exception as e:
+                self._log(f"toggle error: {e}")
+            finally:
+                self._pending = None
+                self._schedule_refresh()
 
     def _on_hk_release(self, event) -> None:
         self._hk_armed = False

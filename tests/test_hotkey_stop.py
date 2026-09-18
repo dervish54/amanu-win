@@ -98,13 +98,23 @@ def test_hotkey_edge_triggered(monkeypatch):
     app = app_mod.TrayApp(cfg)
     toggles = []
     monkeypatch.setattr(app, "toggle", lambda: toggles.append(1))
+    import time as _time
     app.run()
+    deadline = _time.monotonic() + 5
+
+    def wait_n(n):
+        nonlocal deadline
+        while len(toggles) < n and _time.monotonic() < deadline:
+            _time.sleep(0.02)
 
     hooks["press"](None)   # physical key-down
     hooks["press"](None)   # Windows auto-repeat while held
     hooks["press"](None)
+    wait_n(1)
+    _time.sleep(0.3)  # give repeats a chance to slip through
     assert toggles == [1], "auto-repeat key-downs must not re-toggle"
 
     hooks["release"](None)  # key released
     hooks["press"](None)    # deliberate second press
+    wait_n(2)
     assert toggles == [1, 1]

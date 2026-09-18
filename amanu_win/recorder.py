@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import logging
+
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
@@ -164,6 +166,7 @@ class StereoRecorder:
         device = None
         if self._mic_pick:
             device, rate = self._mic_pick
+        logging.getLogger(__name__).info("opening mic stream (rate=%s)", rate)
         self._sf_mic = sf.SoundFile(
             str(self._tmp(".mic")), mode="w", samplerate=rate,
             channels=1, subtype="PCM_16",
@@ -190,6 +193,7 @@ class StereoRecorder:
                 dtype=DTYPE, callback=cb, blocksize=4096,
             )
             self._stream.start()
+            logging.getLogger(__name__).info("mic stream started")
         except Exception:
             # WASAPI endpoint can refuse (exclusive-mode hold, profile
             # switch); fall back to the PortAudio default rather than
@@ -243,6 +247,7 @@ class StereoRecorder:
                 return
 
             stream.start_stream()
+            logging.getLogger(__name__).info("loopback stream started (rate=%s)", rate)
             while not self._stop.is_set() and stream.is_active():
                 time.sleep(0.1)
             stream.stop_stream()
@@ -273,6 +278,9 @@ class StereoRecorder:
             p.unlink(missing_ok=True)
 
     def _merge(self):
+        logging.getLogger(__name__).info(
+            "merging tracks: mic %s frames @%s, sys %s frames @%s",
+            self._mic_frames, self.info.mic_rate, self._sys_frames, self.info.system_rate)
         """Resample both mono tracks to the archive rate and interleave.
 
         Both streams start within ~100 ms of each other; for v1 the tracks

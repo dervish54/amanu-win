@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from . import config as config_mod
 from .config import Config
 from .recorder import default_loopback_name, default_mic_name
 
@@ -32,6 +33,8 @@ def doctor(config: Config) -> int:
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    from .applog import setup_logging
+    setup_logging(config_mod.CONFIG_PATH.parent)
     config = Config.load()
 
     if argv and argv[0] == "--doctor":
