@@ -40,3 +40,20 @@ def test_no_warning_when_mic_absent_entirely():
                              sys_frames=48000 * 42, sys_rate=48000,
                              wall_s=42.0, mic_opened=False)
     assert warns == []
+
+
+def test_early_warning_fires_after_five_silent_seconds():
+    from amanu_win.recorder import early_capture_warning
+    msg = early_capture_warning(mic_frames=4800, mic_rate=48000, elapsed_s=5.0, mic_opened=True)
+    assert msg is not None and "mic" in msg
+
+
+def test_early_warning_quiet_when_audio_flows():
+    from amanu_win.recorder import early_capture_warning
+    msg = early_capture_warning(mic_frames=48000 * 4, mic_rate=48000, elapsed_s=5.0, mic_opened=True)
+    assert msg is None
+
+
+def test_early_warning_skipped_when_no_mic():
+    from amanu_win.recorder import early_capture_warning
+    assert early_capture_warning(0, 48000, 5.0, mic_opened=False) is None

@@ -36,6 +36,8 @@ def build(venv_python: Path, out: Path, name: str = "amanu") -> Path:
         "--collect-data", "faster_whisper",
         "--hidden-import", "pystray._win32",
         "--hidden-import", "amanu_win",
+        "--collect-submodules", "pycaw",
+        "--collect-submodules", "comtypes",
         str(REPO_ROOT / "launcher.py"),
     ]
     print(" ".join(cmd))

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from . import config as config_mod
 from .config import Config
-from .recorder import default_loopback_name, default_mic_name
+from .recorder import default_loopback_name, select_mic_device
 
 
 def doctor(config: Config) -> int:
@@ -14,7 +14,9 @@ def doctor(config: Config) -> int:
     print(f"  config:          {__import__('amanu_win.config', fromlist=['CONFIG_PATH']).CONFIG_PATH}")
     print(f"  recordings_dir:  {config.recordings_dir} (exists: {config.recordings_dir.exists()})")
     print(f"  models_dir:      {config.models_dir}")
-    print(f"  mic:             {default_mic_name()}")
+    picked = select_mic_device()
+    mic_desc = f"{picked[2]} @ {picked[1]}Hz" if picked else "none"
+    print(f"  mic (endpoint):  {mic_desc}")
     print(f"  system loopback: {default_loopback_name()}")
 
     from .summary import ollama_available

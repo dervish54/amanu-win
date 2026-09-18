@@ -70,7 +70,51 @@ def _resample(mono: np.ndarray, src_rate: int, dst_rate: int = ARCHIVE_RATE) -> 
     return np.interp(t_dst, t_src, mono).astype(np.float32)
 
 
-def _wasapi_default_input():
+def default_capture_endpoint_name() -> str | None:
+    """The endpoint other apps record from: Windows default capture device
+    (MMDevice API, eCapture/eConsole). PortAudio's own hostapi default can
+    point at a different endpoint entirely — that mismatch was incident
+    2026.09.18-1905 (browser heard the mic, we opened a silent one)."""
+    try:
+        from comtypes import CLSCTX_ALL, CoCreateInstance
+        from pycaw.constants import CLSID_MMDeviceEnumerator, EDataFlow, ERole
+        from pycaw.pycaw import IMMDeviceEnumerator, AudioUtilities
+        enum = CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, CLSCTX_ALL)
+        d = enum.GetDefaultAudioEndpoint(EDataFlow.eCapture.value, ERole.eConsole.value)
+        return AudioUtilities.CreateDevice(d).FriendlyName
+    except Exception:
+        return None
+
+
+def select_mic_device():
+    """(index, rate, name) of the WASAPI endpoint to open, or None.
+
+    Follows the Windows default capture endpoint by name; falls back to the
+    WASAPI hostapi default only when the endpoint cannot be read.
+    """
+    try:
+        wasapi = next((i for i, a in enumerate(sd.query_hostapis())
+                       if "WASAPI" in a["name"].upper()), None)
+        if wasapi is None:
+            return None
+        devices = sd.query_devices()
+        ep = default_capture_endpoint_name()
+        if ep:
+            for i, d in enumerate(devices):
+                if (d["hostapi"] == wasapi and d["max_input_channels"] > 0
+                        and d["name"] == ep):
+                    return i, int(d["default_samplerate"]), d["name"]
+        idx = int(sd.query_hostapis(wasapi)["default_input_device"])
+        if idx >= 0:
+            d = devices[idx]
+            if d["max_input_channels"] > 0:
+                return idx, int(d["default_samplerate"]), d["name"]
+    except Exception:
+        return None
+    return None
+
+
+def _wasapi_default_input_legacy():
     """(device_index, rate) of the WASAPI default input, or None.
 
     The MME-default input cannot be trusted: Bluetooth hands-free mics are
@@ -101,7 +145,7 @@ class StereoRecorder:
         # mic_tap: optional callable fed every mic frame batch (int16, native
         # rate) for live chunk transcription; assigned before start()
         self.mic_tap = mic_tap
-        picked = _wasapi_default_input()
+        picked = select_mic_device()
         self._mic_pick = picked  # resolved once so tap and stream agree
         self.info = CaptureInfo(
             mic_device=default_mic_name() or "unavailable",
@@ -109,6 +153,7 @@ class StereoRecorder:
         )
         if picked:
             self.info.mic_rate = picked[1]
+            self.info.mic_device = picked[2]  # the endpoint actually opened
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._stream = None
@@ -116,6 +161,7 @@ class StereoRecorder:
         self._sf_sys = None
         self._mic_frames = 0
         self._sys_frames = 0
+        self._early_warnings: list[str] = []
         self.error: str | None = None
 
     # -- public API ------------------------------------------------------------
@@ -126,6 +172,8 @@ class StereoRecorder:
         # its own thread; start it first so it overlaps the mic stream open
         self._start_loopback()
         self._start_mic()
+        threading.Thread(target=self._early_watchdog, name="capture-watchdog",
+                         daemon=True).start()
 
     def stop(self) -> CaptureInfo:
         self._stop.set()
@@ -139,7 +187,7 @@ class StereoRecorder:
             t.join(timeout=5)
         self.info.stopped_at = time.time()
         self.info.error = self.error
-        self.info.warnings = capture_warnings(
+        self.info.warnings = self._early_warnings + capture_warnings(
             mic_frames=self._mic_frames, mic_rate=self.info.mic_rate or ARCHIVE_RATE,
             sys_frames=self._sys_frames, sys_rate=self.info.system_rate or ARCHIVE_RATE,
             wall_s=self.info.stopped_at - self.info.started_at,
@@ -165,8 +213,9 @@ class StereoRecorder:
             rate = ARCHIVE_RATE
         device = None
         if self._mic_pick:
-            device, rate = self._mic_pick
-        logging.getLogger(__name__).info("opening mic stream (rate=%s)", rate)
+            device, rate = self._mic_pick[0], self._mic_pick[1]
+        logging.getLogger(__name__).info(
+            "opening mic stream: endpoint=%r rate=%s", self.info.mic_device, rate)
         self._sf_mic = sf.SoundFile(
             str(self._tmp(".mic")), mode="w", samplerate=rate,
             channels=1, subtype="PCM_16",
@@ -277,6 +326,17 @@ class StereoRecorder:
         finally:
             p.unlink(missing_ok=True)
 
+    def _early_watchdog(self) -> None:
+        time.sleep(EARLY_WATCHDOG_S)
+        if self._stop.is_set():
+            return
+        msg = early_capture_warning(
+            self._mic_frames, self.info.mic_rate or ARCHIVE_RATE,
+            EARLY_WATCHDOG_S, mic_opened=self._stream is not None)
+        if msg:
+            logging.getLogger(__name__).warning(msg)
+            self._early_warnings.append(msg)
+
     def _merge(self):
         logging.getLogger(__name__).info(
             "merging tracks: mic %s frames @%s, sys %s frames @%s",
@@ -335,3 +395,19 @@ def capture_warnings(mic_frames: int, mic_rate: int,
     if sys_opened and sys_s < 0.5 * wall_s:
         warns.append(f"system loopback delivered only {sys_s:.1f}s of {wall_s:.0f}s recording")
     return warns
+
+EARLY_WATCHDOG_S = 5.0
+EARLY_MIN_DELIVERED_S = 2.0
+
+
+def early_capture_warning(mic_frames: int, mic_rate: int, elapsed_s: float,
+                          mic_opened: bool = True) -> str | None:
+    """Real-time form of the stall check: surfaces a dead mic while the
+    recording is still running, not after the fact."""
+    if not mic_opened or elapsed_s < EARLY_WATCHDOG_S:
+        return None
+    delivered = mic_frames / max(mic_rate, 1)
+    if delivered < EARLY_MIN_DELIVERED_S:
+        return (f"mic silent after {elapsed_s:.0f}s of recording "
+                f"({delivered:.1f}s delivered) — check the microphone device")
+    return None
