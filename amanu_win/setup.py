@@ -95,6 +95,8 @@ def run_setup(config: Config, startup: bool = True, log=print) -> dict:
     result["config"] = "created" if ensure_config() else "exists"
     ensure_dirs(config)
     result["dirs"] = "ok"
+    shim = register_cli_shim(Path.home() / ".local" / "bin")
+    result["cli_shim"] = str(shim)
     result["ollama"] = ensure_ollama(config)
     result["model"] = ensure_model(config)
     result["whisper"] = "cached" if preload_whisper(config) else "failed"
@@ -112,3 +114,26 @@ def run_setup(config: Config, startup: bool = True, log=print) -> dict:
     for k, v in result.items():
         log(f"  {k:10s}: {v}")
     return result
+
+
+def register_cli_shim(bin_dir: Path, target_cmd: str | None = None) -> Path:
+    """Drop amanu.cmd into ~/.local/bin (already on PATH for most setups).
+
+    target_cmd: the command line the shim runs. Default: frozen exe next to
+    this interpreter when running as a PyInstaller bundle, else the current
+    python + this package.
+    """
+    shim = bin_dir / "amanu.cmd"
+    if shim.exists():
+        return shim
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    if target_cmd is None:
+        import sys
+        if getattr(sys, "frozen", False):
+            target_cmd = f'"{sys.executable}" %*'
+        else:
+            root = Path(__file__).resolve().parent.parent
+            target_cmd = (f'set "PYTHONPATH={root}" && '
+                          f'"{sys.executable}" -m amanu_win %*')
+    shim.write_text(f"@echo off\r\n{target_cmd}\r\n", encoding="ascii")
+    return shim

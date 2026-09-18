@@ -121,3 +121,14 @@ def test_run_setup_aggregates(cfg, monkeypatch, tmp_path):
     result2 = setup_mod.run_setup(cfg, startup=False)
     assert result2["config"] == "exists"
     assert result2["startup"] == "skipped"
+
+
+def test_register_cli_shim(tmp_path, monkeypatch):
+    lnk = setup_mod.register_cli_shim(tmp_path, target_cmd="EXEPATH")
+    assert lnk.name == "amanu.cmd"
+    assert "EXEPATH" in lnk.read_text(encoding="ascii")
+    # idempotent: existing shim is not rewritten
+    calls_before = lnk.read_text(encoding="ascii")
+    lnk.write_text("custom content", encoding="ascii")
+    setup_mod.register_cli_shim(tmp_path, target_cmd="OTHER")
+    assert lnk.read_text(encoding="ascii") == "custom content"
