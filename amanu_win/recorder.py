@@ -80,10 +80,25 @@ def default_capture_endpoint_name() -> str | None:
         from pycaw.constants import CLSID_MMDeviceEnumerator, EDataFlow, ERole
         from pycaw.pycaw import IMMDeviceEnumerator, AudioUtilities
         enum = CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, CLSCTX_ALL)
-        d = enum.GetDefaultAudioEndpoint(EDataFlow.eCapture.value, ERole.eConsole.value)
-        return AudioUtilities.CreateDevice(d).FriendlyName
+        # communications first: Chrome and call apps record from the
+        # communications default, which tracks newly plugged headsets faster
+        for role in (ERole.eCommunications, ERole.eConsole):
+            try:
+                d = enum.GetDefaultAudioEndpoint(EDataFlow.eCapture.value, role.value)
+                return AudioUtilities.CreateDevice(d).FriendlyName
+            except Exception:
+                continue
     except Exception:
-        return None
+        pass
+    return None
+
+
+def _names_match(portaudio_name: str, endpoint_name: str) -> bool:
+    """PortAudio truncates long WASAPI device names; a truncated prefix of
+    the full MMDevice FriendlyName is still the same endpoint."""
+    a = portaudio_name.strip().lower()
+    b = endpoint_name.strip().lower()
+    return bool(a) and bool(b) and (a == b or b.startswith(a) or a.startswith(b))
 
 
 def select_mic_device():
@@ -102,7 +117,7 @@ def select_mic_device():
         if ep:
             for i, d in enumerate(devices):
                 if (d["hostapi"] == wasapi and d["max_input_channels"] > 0
-                        and d["name"] == ep):
+                        and _names_match(d["name"], ep)):
                     return i, int(d["default_samplerate"]), d["name"]
         idx = int(sd.query_hostapis(wasapi)["default_input_device"])
         if idx >= 0:
@@ -162,6 +177,8 @@ class StereoRecorder:
         self._mic_frames = 0
         self._sys_frames = 0
         self._early_warnings: list[str] = []
+        self._mic_peak = 0
+        self._sys_peak = 0
         self.error: str | None = None
 
     # -- public API ------------------------------------------------------------
@@ -192,7 +209,8 @@ class StereoRecorder:
             sys_frames=self._sys_frames, sys_rate=self.info.system_rate or ARCHIVE_RATE,
             wall_s=self.info.stopped_at - self.info.started_at,
             mic_opened=self._stream is not None,
-            sys_opened=self._sf_sys is not None)
+            sys_opened=self._sf_sys is not None,
+            mic_peak=self._mic_peak, sys_peak=self._sys_peak)
         # close the capture-side files first: on Windows a file cannot be
         # read/removed while a SoundFile still holds it open
         for s in (self._sf_mic, self._sf_sys):
@@ -226,6 +244,7 @@ class StereoRecorder:
             try:
                 self._sf_mic.write(indata)
                 self._mic_frames += len(indata)
+                self._mic_peak = max(self._mic_peak, int(np.abs(indata.astype(np.int32)).max()))
             except Exception as e:
                 self.error = f"mic write failed: {e}"
             if self.mic_tap is not None:
@@ -278,6 +297,7 @@ class StereoRecorder:
                     data = np.frombuffer(in_data, dtype=np.int16)
                     sf_sys.write(data)
                     self._sys_frames += len(data)
+                    self._sys_peak = max(self._sys_peak, int(np.abs(data.astype(np.int32)).max()))
                 except Exception as e:
                     self.error = f"loopback write failed: {e}"
                 return None, pyaudio.paContinue
@@ -374,11 +394,16 @@ class StereoRecorder:
                     pass
 
 
+SILENCE_PEAK = 3  # int16; below this the device is emitting digital zeros
+
+
 def capture_warnings(mic_frames: int, mic_rate: int,
                      sys_frames: int, sys_rate: int,
                      wall_s: float,
                      mic_opened: bool = True,
-                     sys_opened: bool = True) -> list[str]:
+                     sys_opened: bool = True,
+                     mic_peak: int | None = None,
+                     sys_peak: int | None = None) -> list[str]:
     """Flag streams that stalled: opened but delivered <50% of wall time.
 
     A stream that dies mid-recording (e.g. a virtual mic that needs its
@@ -394,6 +419,12 @@ def capture_warnings(mic_frames: int, mic_rate: int,
         warns.append(f"mic delivered only {mic_s:.1f}s of {wall_s:.0f}s recording — check the microphone device")
     if sys_opened and sys_s < 0.5 * wall_s:
         warns.append(f"system loopback delivered only {sys_s:.1f}s of {wall_s:.0f}s recording")
+    # frame counters alone miss drivers that emit synthetic silence (WO Mic):
+    # frames arrive on schedule, but every sample is zero
+    if mic_opened and mic_peak is not None and mic_s >= 0.5 * wall_s and mic_peak < SILENCE_PEAK:
+        warns.append("mic delivered only digital silence — the device is not actually streaming audio")
+    if sys_opened and sys_peak is not None and sys_s >= 0.5 * wall_s and sys_peak < SILENCE_PEAK:
+        warns.append("system loopback delivered only digital silence")
     return warns
 
 EARLY_WATCHDOG_S = 5.0
