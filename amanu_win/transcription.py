@@ -27,7 +27,8 @@ def _ensure_cuda_dlls() -> None:
                     os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
 
 
-def load_model(model_name: str, device: str, models_dir: Path):
+def load_model(model_name: str, device: str, models_dir: Path,
+               compute_type: str | None = None):
     from faster_whisper import WhisperModel
 
     models_dir.mkdir(parents=True, exist_ok=True)
@@ -36,10 +37,12 @@ def load_model(model_name: str, device: str, models_dir: Path):
     if device == "cuda":
         try:
             _ensure_cuda_dlls()
-            return WhisperModel(model_name, device="cuda", compute_type="float16")
+            return WhisperModel(model_name, device="cuda",
+                                compute_type=compute_type or "float16")
         except Exception:
             pass  # fall through to CPU: slower, but never blocks a meeting
-    return WhisperModel(model_name, device="cpu", compute_type="int8")
+    return WhisperModel(model_name, device="cpu",
+                        compute_type=compute_type or "int8")
 
 
 def _to_16k(mono: np.ndarray, sr: int) -> np.ndarray:

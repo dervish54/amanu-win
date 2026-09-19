@@ -86,7 +86,8 @@ class SessionManager:
         if self._model is None:
             t = self.config.transcription
             self.log(f"loading model {t['model']} ({t['device']})...")
-            self._model = load_model(t["model"], t["device"], self.config.models_dir)
+            self._model = load_model(t["model"], t["device"], self.config.models_dir,
+                                     t.get("compute_type"))
         return self._model
 
     def _streaming_config(self) -> dict:
