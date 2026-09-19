@@ -7,6 +7,20 @@ from pathlib import Path
 from . import config as config_mod
 from .config import Config
 from .recorder import default_loopback_name, select_mic_device
+from .first_run import run_first_run
+
+def run_tray(config: Config) -> None:
+    from .app import TrayApp
+    TrayApp(config).run()
+
+
+def start(config: Config, bundle_dir: Path) -> None:
+    """Normal startup: consume installer choices, maybe first-run, then tray."""
+    from . import setup as setup_mod
+    setup_mod.apply_install_choices(config, bundle_dir)
+    if setup_mod.needs_first_run(config):
+        run_first_run(config, bundle_dir)
+    run_tray(config)
 
 
 def doctor(config: Config) -> int:
@@ -51,8 +65,12 @@ def main(argv=None) -> int:
         sm.process(Path(argv[1]))
         return 0
 
-    from .app import TrayApp
-    TrayApp(config).run()
+    # tray entry moved to run_tray(); start() handles first-run gating
+    if getattr(sys, "frozen", False):
+        bundle_dir = Path(sys.executable).parent
+    else:
+        bundle_dir = Path(__file__).resolve().parent.parent
+    start(config, bundle_dir)
     return 0
 
 
