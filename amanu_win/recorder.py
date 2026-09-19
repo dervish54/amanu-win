@@ -147,17 +147,57 @@ def select_mic_device(prefer: str | None = None):
 
 def select_mic_device_with_retry(prefer: str, tries: int = 4,
                                  delay_s: float = 0.75):
-    """Retry pin selection: the pinned BT endpoint appears a moment after
-    Windows kicks the headphones into the hands-free profile (which the
-    system-audio side of the same recorder just did)."""
+    """Retry pin selection, kicking the Bluetooth profile once on the first
+    miss: the pinned HFP capture endpoint exists in MMDevice but is invisible
+    to PortAudio until someone activates it — that is what Chrome and the
+    Settings mic test do, and why they 'work' while enumeration shows
+    nothing. The kick connects hands-free; the endpoint then appears."""
     for attempt in range(tries):
         pick = select_mic_device(prefer=prefer)
         if pick is not None:
             return pick
+        if attempt == 0:
+            kick_hf_endpoint(prefer)
         if attempt < tries - 1:
             time.sleep(delay_s)
     return None
 
+
+def kick_hf_endpoint(needle: str, hold_s: float = 0.6) -> bool:
+    """Activate the named capture endpoint via MMDevice and run its stream
+    briefly, forcing Windows to connect the Bluetooth hands-free profile.
+    True when a matching endpoint was found and activated."""
+    import warnings
+    warnings.filterwarnings("ignore")
+    try:
+        from comtypes import CLSCTX_ALL, CoCreateInstance
+        from pycaw.constants import CLSID_MMDeviceEnumerator, EDataFlow
+        from pycaw.pycaw import IMMDeviceEnumerator, AudioUtilities
+        from pycaw.api.audioclient import IAudioClient
+
+        n = needle.strip().lower()
+        enum = CoCreateInstance(CLSID_MMDeviceEnumerator,
+                                IMMDeviceEnumerator, CLSCTX_ALL)
+        coll = enum.EnumAudioEndpoints(EDataFlow.eCapture.value, 15)
+        for i in range(coll.GetCount()):
+            d = coll.Item(i)
+            try:
+                name = AudioUtilities.CreateDevice(d).FriendlyName
+            except Exception:
+                continue  # NOTPRESENT endpoints expose no property store
+            if name and n in name.lower():
+                from comtypes import cast, POINTER
+                ac = cast(d.Activate(IAudioClient._iid_, CLSCTX_ALL, None),
+                          POINTER(IAudioClient))
+                fmt = ac.GetMixFormat()
+                ac.Initialize(0, 0, 0, 0, fmt, None)  # shared mode
+                ac.Start()
+                time.sleep(hold_s)
+                ac.Stop()
+                return True
+    except Exception:
+        logging.getLogger(__name__).exception("HF endpoint kick failed")
+    return False
 
 def _active_capture_devices():
     """[(index, rate, name)] of WASAPI inputs Windows lists as ACTIVE, or

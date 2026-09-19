@@ -145,3 +145,29 @@ def test_pin_retry_exhaustion_returns_none(monkeypatch):
     monkeypatch.setattr(recorder, "select_mic_device", lambda prefer=None: None)
     monkeypatch.setattr(recorder.time, "sleep", lambda s: None)
     assert recorder.select_mic_device_with_retry("SonoFlo", tries=3, delay_s=0.1) is None
+
+
+def test_pin_miss_kicks_hf_endpoint_via_mmdevice(monkeypatch):
+    # Cold Bluetooth: the HFP capture endpoint exists in MMDevice but is
+    # invisible to PortAudio until something activates it. Chrome and
+    # Windows Settings activate it; we must too.
+    kicks = []
+    selects = [None, (3, 16000, "Головной телефон (1MORE SonoFlow Hands-Free AG Audio)")]
+    monkeypatch.setattr(recorder, "select_mic_device",
+                        lambda prefer=None: selects.pop(0))
+    monkeypatch.setattr(recorder, "kick_hf_endpoint",
+                        lambda needle, hold_s=0.6: kicks.append(needle) or True)
+    monkeypatch.setattr(recorder.time, "sleep", lambda s: None)
+    picked = recorder.select_mic_device_with_retry("SonoFlo", tries=4, delay_s=0.1)
+    assert picked is not None and picked[0] == 3
+    assert kicks == ["SonoFlo"], "pin miss must kick the endpoint via MMDevice"
+
+
+def test_kick_not_called_when_endpoint_visible(monkeypatch):
+    kicks = []
+    monkeypatch.setattr(recorder, "select_mic_device",
+                        lambda prefer=None: (1, 48000, "Mic"))
+    monkeypatch.setattr(recorder, "kick_hf_endpoint",
+                        lambda needle, hold_s=0.6: kicks.append(needle) or True)
+    assert recorder.select_mic_device_with_retry("SonoFlo", tries=2, delay_s=0.1)
+    assert kicks == []
