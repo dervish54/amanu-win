@@ -166,6 +166,8 @@ class TrayApp:
         try:
             if all(keyboard.is_pressed(m) for m in self._hk_mods):
                 self._hk_armed = True
+                import logging
+                logging.getLogger(__name__).info("hotkey pressed")
                 self._pending = ("stop" if self.sessions.is_recording
                                  else "start")
                 self._schedule_refresh()

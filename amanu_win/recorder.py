@@ -195,6 +195,12 @@ class _MicLeg:
         self.stream.start()
 
     def _cb(self, indata, frames, time_info, status):
+        r = self.recorder
+        if r._first_mic_frame_at is None:
+            r._first_mic_frame_at = time.time()
+            logging.getLogger(__name__).info(
+                "first mic frame %.2fs after recording start",
+                r._first_mic_frame_at - r.info.started_at)
         try:
             self.sf.write(indata)
             self.frames += len(indata)
@@ -246,6 +252,7 @@ class StereoRecorder:
         self._sys_frames = 0
         self._sys_peak = 0
         self._early_warnings: list[str] = []
+        self._first_mic_frame_at: float | None = None
         self.error: str | None = None
 
     # -- public API ------------------------------------------------------------
