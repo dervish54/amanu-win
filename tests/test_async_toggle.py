@@ -22,7 +22,7 @@ def app(monkeypatch):
     monkeypatch.setattr(app_mod.keyboard, "on_press_key", lambda k, cb: None)
     monkeypatch.setattr(app_mod.keyboard, "on_release_key", lambda k, cb: None)
     cfg = Config({"transcription": {"enabled": False}, "summary": {"enabled": False},
-                  "paste": {"enabled": False}, "punctuation": {"enabled": False}})
+                  "paste": {"enabled": False}, "punctuation": {"enabled": False}, "panel": {"enabled": False}})
     a = app_mod.TrayApp(cfg)
     yield a
     a._work_q.put(None)
@@ -58,3 +58,15 @@ def test_pending_state_shown_immediately(app, monkeypatch):
     while app._pending is not None and time.monotonic() < deadline:
         time.sleep(0.05)
     assert app._pending is None
+
+
+def test_panel_state_mapping(app):
+    assert app._panel_state() == "idle"
+    app.sessions.recorder = object()  # fake: recording
+    assert app._panel_state() == "recording"
+    app.sessions.recorder = None
+    app.sessions.processing.set()
+    assert app._panel_state() == "processing"
+    app.sessions.processing.clear()
+    app._pending = "start"
+    assert app._panel_state() == "pending"

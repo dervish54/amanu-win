@@ -16,6 +16,11 @@ DEFAULTS: dict = {
     "keep_audio": True,
     "hotkey": "ctrl+alt+r",
     "mic_device": None,  # substring to pin a specific mic (e.g. "SonoFlo")
+    "panel": {
+        "enabled": True,   # floating overlay bar (SuperWhisper-style)
+        "x": None,
+        "y": None,
+    },
     "models_dir": "~/.cache/amanu/models",
     "paste": {
         "enabled": True,   # insert own speech into the focused window after transcription

@@ -94,7 +94,7 @@ def test_hotkey_edge_triggered(monkeypatch):
     monkeypatch.setattr(app_mod.keyboard, "is_pressed", lambda k: True)
     monkeypatch.setattr(app_mod.pystray.Icon, "run", lambda self: None)
     cfg = Config({"transcription": {"enabled": False}, "summary": {"enabled": False},
-                  "paste": {"enabled": False}, "punctuation": {"enabled": False}})
+                  "paste": {"enabled": False}, "punctuation": {"enabled": False}, "panel": {"enabled": False}})
     app = app_mod.TrayApp(cfg)
     toggles = []
     monkeypatch.setattr(app, "toggle", lambda: toggles.append(1))

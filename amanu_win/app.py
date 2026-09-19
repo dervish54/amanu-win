@@ -16,6 +16,7 @@ import pystray
 from PIL import Image, ImageDraw
 from pystray._util import win32 as pwin32
 
+from .panel import FloatingPanel, PanelController
 from .session import SessionManager
 
 IDLE = (196, 43, 43)      # red
@@ -72,6 +73,18 @@ class TrayApp:
         self._pending = None
         self._hk_armed = False
         self._hk_mods, self._hk_key = [], "r"
+        pcfg = self.config.data.get("panel", {})
+        self.panel = None
+        if pcfg.get("enabled", True):
+            ctl = PanelController(
+                on_record=lambda: self._work_q.put("toggle"),
+                on_open_folder=self._open_recordings,
+                on_quit=self.quit,
+                get_pos=lambda: (pcfg.get("x"), pcfg.get("y"))
+                                if pcfg.get("x") is not None else None,
+                save_pos=self._save_panel_pos,
+            )
+            self.panel = FloatingPanel(ctl, pcfg)
         self._worker = threading.Thread(target=self._work_loop,
                                         name="toggle-worker", daemon=True)
         self._worker.start()
@@ -98,6 +111,8 @@ class TrayApp:
         self.icon.icon = _icon_image(color)
         self.icon.title = title
         self.icon.menu = self._build_menu()
+        if self.panel is not None:
+            self.panel.set_state(self._panel_state())
 
     def _build_menu(self):
         if self.sessions.is_recording:
@@ -144,6 +159,24 @@ class TrayApp:
                     self._schedule_refresh()
                 except Exception as e:
                     self._log(f"refresh error: {e}")
+
+    def _panel_state(self) -> str:
+        if self._pending:
+            return "pending"
+        if self.sessions.is_recording:
+            return "recording"
+        if self.sessions.processing.is_set():
+            return "processing"
+        return "idle"
+
+    def _save_panel_pos(self, x: int, y: int) -> None:
+        self.config.data.setdefault("panel", {}).update({"x": x, "y": y})
+        self.config.save()
+
+    def quit(self) -> None:
+        if self.panel is not None:
+            self.panel.close()
+        self.icon.stop()
 
     def _open_recordings(self) -> None:
         import os
@@ -193,4 +226,10 @@ class TrayApp:
 
     def run(self) -> None:
         self._register_hotkey()
-        self.icon.run()
+        if self.panel is not None:
+            # tkinter owns the main thread; the tray loop goes detached
+            self.icon.run_detached()
+            self.panel.run_forever()
+            self.icon.stop()
+        else:
+            self.icon.run()
