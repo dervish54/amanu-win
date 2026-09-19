@@ -76,3 +76,22 @@ def test_apply_install_choices_marks_setup_incomplete(cfg, tmp_path):
     assert setup_mod.needs_first_run(c) is False
     setup_mod.apply_install_choices(c, bundle)
     assert c.data["setup_complete"] is False
+
+
+def test_choices_do_not_override_explicit_user_paths(tmp_path, monkeypatch):
+    # regression: the installer's default Documents path overwrote the user's
+    # existing D:\Recordings preference on upgrade install
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "config.json")
+    bundle = tmp_path / "b3"
+    bundle.mkdir()
+    (bundle / "install-choices.json").write_text(
+        json.dumps({"tier": "balanced", "ollama": True,
+                    "recordings_dir": "C:\\Wizard\\Default",
+                    "models_dir": "C:\\Wizard\\models"}), encoding="utf-8")
+    c = Config({"recordings_dir": "D:\\Recordings"})
+    setup_mod.apply_install_choices(c, bundle)
+    assert c.data["recordings_dir"] == "D:\\Recordings"
+    # models_dir was not explicit -> wizard's choice applies
+    assert c.data["models_dir"] == "C:\\Wizard\\models"
+    # tier/ollama always apply — the wizard is the explicit act of choosing
+    assert c.data["transcription"]["model"] == "small"

@@ -146,8 +146,10 @@ def apply_install_choices(config: Config, bundle_dir: Path) -> bool:
         tiers.apply_tier(config.data, data["tier"])
     if "ollama" in data:
         config.data.setdefault("summary", {})["enabled"] = data["ollama"]
-    if data.get("recordings_dir"):
-        config.data["recordings_dir"] = data["recordings_dir"]
+    for key in ("recordings_dir", "models_dir"):
+        # installer defaults must never clobber paths the user wrote themselves
+        if data.get(key) and key not in getattr(config, "explicit", set()):
+            config.data[key] = data[key]
     # a choices file exists only right after a fresh install: that IS the
     # first-run gate (existing configs carry no setup_complete flag at all)
     config.data["setup_complete"] = False

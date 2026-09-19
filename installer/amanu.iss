@@ -41,6 +41,7 @@ var
   OllamaCheck: TNewCheckBox;
   RecDirEdit: TNewEdit;
   SpaceLabel: TNewStaticText;
+  RecDirDirty: Boolean;
 
 const
   BUNDLE_MB = 300;
@@ -77,9 +78,20 @@ begin
   UpdateSpaceLabel;
 end;
 
+procedure RecDirEdited(Sender: TObject);
+begin
+  RecDirDirty := True;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  { recordings default follows the chosen install drive; a path the user
+    typed themselves (RecDirDirty) is never touched }
+  if (CurPageID = OptionsPage.ID) and not RecDirDirty then
+    RecDirEdit.Text := ExpandConstant('{app}\Recordings');
+end;
+
 procedure InitializeWizard;
-var
-  base: string;
 begin
   OptionsPage := CreateInputOptionPage(wpSelectDir,
     'Компоненты', 'Модель распознавания и дополнения',
@@ -98,12 +110,12 @@ begin
   OllamaCheck.Checked := True;
   OllamaCheck.OnClick := @OptionsChanged;
 
-  base := ExpandConstant('{userdocs}\Amanu Recordings');
   RecDirEdit := TNewEdit.Create(OptionsPage);
   RecDirEdit.Parent := OptionsPage.Surface;
   RecDirEdit.Top := OptionsPage.SurfaceHeight - ScaleY(40);
   RecDirEdit.Width := OptionsPage.SurfaceWidth;
-  RecDirEdit.Text := base;
+  RecDirEdit.OnChange := @RecDirEdited;
+  RecDirDirty := False;
 
   SpaceLabel := TNewStaticText.Create(OptionsPage);
   SpaceLabel.Parent := OptionsPage.Surface;
@@ -117,6 +129,7 @@ begin
   StringChange(S, '\', '\\');
   Result := S;
 end;
+
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
@@ -132,10 +145,12 @@ begin
     end;
     if OllamaCheck.Checked then ollama := 'true' else ollama := 'false';
     json := '{"tier": "' + tier + '", "ollama": ' + ollama +
-            ', "recordings_dir": "' + JsonEscape(RecDirEdit.Text) + '"}';
+            ', "recordings_dir": "' + JsonEscape(RecDirEdit.Text) +
+            '", "models_dir": "' + JsonEscape(ExpandConstant('{app}\models')) + '"}';
     SaveStringToFile(ExpandConstant('{app}\install-choices.json'), json, False);
   end;
 end;
+
 function InitializeUninstall: Boolean;
 var
   models, rec: string;

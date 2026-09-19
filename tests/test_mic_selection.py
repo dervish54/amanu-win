@@ -116,8 +116,32 @@ def test_mic_device_override_by_substring(monkeypatch):
     assert picked is not None and picked[0] == 1, "config override must win over the default endpoint"
 
 
-def test_mic_device_override_no_match_falls_back(monkeypatch):
+
+
+def test_mic_device_pin_miss_returns_none_loudly(monkeypatch):
+    # regression: 2026-09-19 21:27 session — pin "SonoFlo" matched nothing
+    # (BT endpoint absent in A2DP), silent fallback opened a dead virtual
+    # cable and the mic channel was pure digital silence
     _fake_sd(monkeypatch, DEVICES, wasapi_default_idx=0)
-    monkeypatch.setattr(recorder, "default_capture_endpoint_name", lambda: None)
-    picked = recorder.select_mic_device(prefer="nonexistent-device")
-    assert picked[0] == 0, "no match → normal default chain"
+    assert recorder.select_mic_device(prefer="not-a-real-device") is None
+
+
+def test_pin_miss_retries_until_endpoint_appears(monkeypatch):
+    calls = []
+    seq = [None, None, (3, 16000, "Головной телефон (1MORE SonoFlow Hands-Free AG Audio)")]
+
+    def fake_select(prefer=None):
+        calls.append(prefer)
+        return seq.pop(0)
+
+    monkeypatch.setattr(recorder, "select_mic_device", fake_select)
+    monkeypatch.setattr(recorder.time, "sleep", lambda s: None)
+    picked = recorder.select_mic_device_with_retry("SonoFlo", tries=4, delay_s=0.1)
+    assert picked is not None and picked[0] == 3
+    assert len(calls) == 3
+
+
+def test_pin_retry_exhaustion_returns_none(monkeypatch):
+    monkeypatch.setattr(recorder, "select_mic_device", lambda prefer=None: None)
+    monkeypatch.setattr(recorder.time, "sleep", lambda s: None)
+    assert recorder.select_mic_device_with_retry("SonoFlo", tries=3, delay_s=0.1) is None

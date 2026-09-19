@@ -109,10 +109,12 @@ def select_mic_device(prefer: str | None = None):
     """(index, rate, name) of the WASAPI endpoint to open, or None.
 
     prefer: case-insensitive substring pinning a specific device
-    (config "mic_device") — with many virtual mics installed the Windows
-    default is often not the device the user means. Otherwise follows the
-    Windows default capture endpoint by name; falls back to the WASAPI
-    hostapi default only when the endpoint cannot be read.
+    (config "mic_device"). A pin that matches NOTHING returns None — never
+    a silent fallback: 2026-09-19 the SonoFlow HFP endpoint vanished in
+    A2DP mode, the fallback opened a dead virtual cable, and 80 s of
+    digital silence got recorded. Bluetooth endpoints appear and disappear
+    with the profile switch; callers wanting resilience use
+    select_mic_device_with_retry.
     """
     try:
         wasapi = next((i for i, a in enumerate(sd.query_hostapis())
@@ -126,6 +128,7 @@ def select_mic_device(prefer: str | None = None):
                 if (d["hostapi"] == wasapi and d["max_input_channels"] > 0
                         and needle in d["name"].lower()):
                     return i, int(d["default_samplerate"]), d["name"]
+            return None
         ep = default_capture_endpoint_name()
         if ep:
             for i, d in enumerate(devices):
@@ -139,6 +142,20 @@ def select_mic_device(prefer: str | None = None):
                 return idx, int(d["default_samplerate"]), d["name"]
     except Exception:
         return None
+    return None
+
+
+def select_mic_device_with_retry(prefer: str, tries: int = 4,
+                                 delay_s: float = 0.75):
+    """Retry pin selection: the pinned BT endpoint appears a moment after
+    Windows kicks the headphones into the hands-free profile (which the
+    system-audio side of the same recorder just did)."""
+    for attempt in range(tries):
+        pick = select_mic_device(prefer=prefer)
+        if pick is not None:
+            return pick
+        if attempt < tries - 1:
+            time.sleep(delay_s)
     return None
 
 
@@ -293,7 +310,8 @@ class StereoRecorder:
 
     # -- mic: shotgun ------------------------------------------------------------
     def _start_mic(self):
-        pick = select_mic_device(prefer=self._mic_device_pref)
+        pick = (select_mic_device_with_retry(self._mic_device_pref)
+                if self._mic_device_pref else select_mic_device())
         active = None if self._mic_device_pref else _active_capture_devices()
 
         if pick and active and len(active) > 1:
@@ -329,7 +347,10 @@ class StereoRecorder:
 
         # single-device path (pinned, one active input, or enumeration unreadable)
         if pick is None:
-            self.info.mic_device = "unavailable (no capture endpoint)"
+            self.info.mic_device = (f"unavailable (pinned mic "
+                                    f"'{self._mic_device_pref}' not found)"
+                                    if self._mic_device_pref
+                                    else "unavailable (no capture endpoint)")
             return
         index, rate, name = pick
         leg = _MicLeg(self, index, rate, name)

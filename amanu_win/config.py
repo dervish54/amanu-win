@@ -64,6 +64,8 @@ def _deep_merge(base: dict, override: dict) -> dict:
 class Config:
     def __init__(self, data: dict | None = None):
         self.data = _deep_merge(DEFAULTS, data or {})
+        # keys the user actually wrote — installer choices must not clobber them
+        self.explicit = set((data or {}).keys())
 
     @classmethod
     def load(cls) -> "Config":
