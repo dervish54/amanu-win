@@ -90,16 +90,28 @@ def sys_exe_dir() -> str:
     return str(Path(sys.executable).parent)
 
 
-def run_setup(config: Config, startup: bool = True, log=print) -> dict:
+def run_setup(config: Config, startup: bool = True,
+              steps: tuple = ("whisper", "ollama"), progress=None,
+              log=print) -> dict:
+    def _prog(step, status):
+        if progress:
+            progress(step, status)
+
     result = {}
     result["config"] = "created" if ensure_config() else "exists"
     ensure_dirs(config)
     result["dirs"] = "ok"
     shim = register_cli_shim(Path.home() / ".local" / "bin")
     result["cli_shim"] = str(shim)
-    result["ollama"] = ensure_ollama(config)
-    result["model"] = ensure_model(config)
-    result["whisper"] = "cached" if preload_whisper(config) else "failed"
+    if "ollama" in steps:
+        _prog("ollama", "start")
+        result["ollama"] = ensure_ollama(config)
+        result["model"] = ensure_model(config)
+        _prog("ollama", "done")
+    if "whisper" in steps:
+        _prog("whisper", "start")
+        result["whisper"] = "cached" if preload_whisper(config) else "failed"
+        _prog("whisper", "done")
 
     if startup:
         from os import environ
@@ -114,6 +126,36 @@ def run_setup(config: Config, startup: bool = True, log=print) -> dict:
     for k, v in result.items():
         log(f"  {k:10s}: {v}")
     return result
+
+
+def needs_first_run(config: Config) -> bool:
+    """Missing flag means True-complete: existing installs never see the wizard."""
+    return config.data.get("setup_complete") is False
+
+
+def apply_install_choices(config: Config, bundle_dir: Path) -> bool:
+    """Merge the installer-written choices file into the config, once."""
+    import json
+    from . import tiers
+
+    choices = bundle_dir / "install-choices.json"
+    if not choices.exists():
+        return False
+    data = json.loads(choices.read_text(encoding="utf-8"))
+    if data.get("tier"):
+        tiers.apply_tier(config.data, data["tier"])
+    if "ollama" in data:
+        config.data.setdefault("summary", {})["enabled"] = data["ollama"]
+    if data.get("recordings_dir"):
+        config.data["recordings_dir"] = data["recordings_dir"]
+    config.save()
+    choices.unlink()
+    return True
+
+
+def mark_setup_complete(config: Config) -> None:
+    config.data["setup_complete"] = True
+    config.save()
 
 
 def register_cli_shim(bin_dir: Path, target_cmd: str | None = None) -> Path:
