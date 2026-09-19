@@ -89,7 +89,8 @@ class TrayApp:
         if self._pending:
             color, title = BUSY, f"Amanu — {self._pending}…"
         elif self.sessions.is_recording:
-            color, title = RECORDING, "Amanu — RECORDING (Ctrl+Alt+R to stop)"
+            warn = " ⚠ mic silent" if any("mic" in w for w in self.sessions.capture_warnings) else ""
+            color, title = RECORDING, f"Amanu — RECORDING (Ctrl+Alt+R to stop){warn}"
         elif self.sessions.processing.is_set():
             color, title = BUSY, f"Amanu — {self.sessions.stage or 'processing'}…"
         else:

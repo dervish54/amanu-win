@@ -56,6 +56,10 @@ class SessionManager:
         self._model = None
         self._live: LiveMicTranscriber | None = None
 
+    def _on_capture_warning(self, msg: str) -> None:
+        self.capture_warnings.append(msg)
+        self._notify()
+
     def _notify(self) -> None:
         if self.on_state_changed is not None:
             try:
@@ -86,7 +90,11 @@ class SessionManager:
         if self.recorder:
             raise RuntimeError("already recording")
         self.session_dir = new_session_dir(self.config.recordings_dir)
-        self.recorder = StereoRecorder(self.session_dir / "audio.wav")
+        self.capture_warnings: list[str] = []
+        self.recorder = StereoRecorder(
+            self.session_dir / "audio.wav",
+            mic_device=self.config.data.get("mic_device"),
+            on_warning=self._on_capture_warning)
         if self._streaming_enabled():
             stream_cfg = self._streaming_config()
             lang = self.config.transcription.get("language", "auto")

@@ -105,3 +105,19 @@ def test_capture_warnings_quiet_on_real_audio():
         sys_frames=44100 * 97, sys_rate=44100,
         wall_s=97.0, mic_peak=2000, sys_peak=1500)
     assert warns == []
+
+
+def test_mic_device_override_by_substring(monkeypatch):
+    # user pins a device; Windows default (WO Mic) must not win
+    _fake_sd(monkeypatch, DEVICES, wasapi_default_idx=0)
+    monkeypatch.setattr(recorder, "default_capture_endpoint_name",
+                        lambda: "Микрофон (WO Mic Device)")
+    picked = recorder.select_mic_device(prefer="SonoFlo")
+    assert picked is not None and picked[0] == 1, "config override must win over the default endpoint"
+
+
+def test_mic_device_override_no_match_falls_back(monkeypatch):
+    _fake_sd(monkeypatch, DEVICES, wasapi_default_idx=0)
+    monkeypatch.setattr(recorder, "default_capture_endpoint_name", lambda: None)
+    picked = recorder.select_mic_device(prefer="nonexistent-device")
+    assert picked[0] == 0, "no match → normal default chain"

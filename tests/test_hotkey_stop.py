@@ -30,7 +30,7 @@ class _FakeInfo:
     warnings = []
 
 class _FakeRecorder:
-    def __init__(self, out_path, mic_tap=None):
+    def __init__(self, out_path, mic_tap=None, **kw):
         self.info = _FakeInfo()
         self.mic_tap = mic_tap
 

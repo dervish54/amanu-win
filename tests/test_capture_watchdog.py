@@ -57,3 +57,18 @@ def test_early_warning_quiet_when_audio_flows():
 def test_early_warning_skipped_when_no_mic():
     from amanu_win.recorder import early_capture_warning
     assert early_capture_warning(0, 48000, 5.0, mic_opened=False) is None
+
+
+def test_early_warning_catches_digital_silence_frames():
+    from amanu_win.recorder import early_capture_warning
+    # frames flow on schedule but every sample is zero (WO Mic pattern)
+    msg = early_capture_warning(mic_frames=48000 * 5, mic_rate=48000,
+                                elapsed_s=5.0, mic_opened=True, mic_peak=0)
+    assert msg is not None and "silence" in msg.lower()
+
+
+def test_early_warning_quiet_with_real_signal():
+    from amanu_win.recorder import early_capture_warning
+    msg = early_capture_warning(mic_frames=48000 * 5, mic_rate=48000,
+                                elapsed_s=5.0, mic_opened=True, mic_peak=500)
+    assert msg is None

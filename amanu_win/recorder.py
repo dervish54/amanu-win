@@ -101,11 +101,14 @@ def _names_match(portaudio_name: str, endpoint_name: str) -> bool:
     return bool(a) and bool(b) and (a == b or b.startswith(a) or a.startswith(b))
 
 
-def select_mic_device():
+def select_mic_device(prefer: str | None = None):
     """(index, rate, name) of the WASAPI endpoint to open, or None.
 
-    Follows the Windows default capture endpoint by name; falls back to the
-    WASAPI hostapi default only when the endpoint cannot be read.
+    prefer: case-insensitive substring pinning a specific device
+    (config "mic_device") — with many virtual mics installed the Windows
+    default is often not the device the user means. Otherwise follows the
+    Windows default capture endpoint by name; falls back to the WASAPI
+    hostapi default only when the endpoint cannot be read.
     """
     try:
         wasapi = next((i for i, a in enumerate(sd.query_hostapis())
@@ -113,6 +116,12 @@ def select_mic_device():
         if wasapi is None:
             return None
         devices = sd.query_devices()
+        if prefer:
+            needle = prefer.strip().lower()
+            for i, d in enumerate(devices):
+                if (d["hostapi"] == wasapi and d["max_input_channels"] > 0
+                        and needle in d["name"].lower()):
+                    return i, int(d["default_samplerate"]), d["name"]
         ep = default_capture_endpoint_name()
         if ep:
             for i, d in enumerate(devices):
@@ -155,12 +164,13 @@ def _wasapi_default_input_legacy():
 
 
 class StereoRecorder:
-    def __init__(self, out_path: Path, mic_tap=None):
+    def __init__(self, out_path: Path, mic_tap=None, mic_device=None,
+                 on_warning=None):
         self.out_path = out_path
         # mic_tap: optional callable fed every mic frame batch (int16, native
         # rate) for live chunk transcription; assigned before start()
         self.mic_tap = mic_tap
-        picked = select_mic_device()
+        picked = select_mic_device(prefer=mic_device)
         self._mic_pick = picked  # resolved once so tap and stream agree
         self.info = CaptureInfo(
             mic_device=default_mic_name() or "unavailable",
@@ -179,6 +189,7 @@ class StereoRecorder:
         self._early_warnings: list[str] = []
         self._mic_peak = 0
         self._sys_peak = 0
+        self.on_warning = on_warning
         self.error: str | None = None
 
     # -- public API ------------------------------------------------------------
@@ -352,10 +363,16 @@ class StereoRecorder:
             return
         msg = early_capture_warning(
             self._mic_frames, self.info.mic_rate or ARCHIVE_RATE,
-            EARLY_WATCHDOG_S, mic_opened=self._stream is not None)
+            EARLY_WATCHDOG_S, mic_opened=self._stream is not None,
+            mic_peak=self._mic_peak)
         if msg:
             logging.getLogger(__name__).warning(msg)
             self._early_warnings.append(msg)
+            if self.on_warning is not None:
+                try:
+                    self.on_warning(msg)
+                except Exception:
+                    pass
 
     def _merge(self):
         logging.getLogger(__name__).info(
@@ -432,7 +449,7 @@ EARLY_MIN_DELIVERED_S = 2.0
 
 
 def early_capture_warning(mic_frames: int, mic_rate: int, elapsed_s: float,
-                          mic_opened: bool = True) -> str | None:
+                          mic_opened: bool = True, mic_peak: int | None = None) -> str | None:
     """Real-time form of the stall check: surfaces a dead mic while the
     recording is still running, not after the fact."""
     if not mic_opened or elapsed_s < EARLY_WATCHDOG_S:
@@ -441,4 +458,8 @@ def early_capture_warning(mic_frames: int, mic_rate: int, elapsed_s: float,
     if delivered < EARLY_MIN_DELIVERED_S:
         return (f"mic silent after {elapsed_s:.0f}s of recording "
                 f"({delivered:.1f}s delivered) — check the microphone device")
+    # synthetic-silence drivers (WO Mic) stream zeros on schedule
+    if mic_peak is not None and mic_peak < SILENCE_PEAK:
+        return (f"mic delivered only digital silence after {elapsed_s:.0f}s — "
+                "the device is not actually streaming audio")
     return None
