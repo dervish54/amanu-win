@@ -1,24 +1,23 @@
 """Two-channel audio capture: microphone (left) + system loopback (right).
 
-Each side is recorded into its own mono PCM WAV at the device's *native*
-sample rate, written directly from its capture callback. A mono file paced
-by its own stream cannot drift: there is no cross-stream pairing, no queue,
-no timeouts. At stop, both channels are resampled to 48 kHz and interleaved
-into the stereo archive (mic left, far end right) — the same layout the
-macOS app writes.
+Microphone leg uses a shotgun start: every ACTIVE capture endpoint records
+the first PROBE_S seconds, and the archive keeps the one with a live
+signal — a dead virtual driver (WO Mic, Virtual Desktop) emits synthetic
+zeros (peak 0-1), while a real ADC always has a noise floor. The user
+starts speaking immediately; no start delay, no lost words. A pinned
+`mic_device` config skips the shotgun and opens exactly that device.
 
-Earlier revision merged both streams chunk-by-chunk in one writer thread;
-file time then followed queue availability instead of wall time, which
-slowed the audio down and cut the tail off when recording stopped.
+Each side is written to its own mono PCM WAV at the device's native rate,
+directly from its capture callback; at stop both tracks are resampled to
+48 kHz and interleaved into the stereo archive (mic left, far end right).
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-
-import logging
 
 import numpy as np
 import sounddevice as sd
@@ -27,6 +26,11 @@ import pyaudiowpatch as pyaudio
 
 ARCHIVE_RATE = 48000
 DTYPE = "int16"
+LIVE_PEAK_FLOOR = 10   # int16 peak above this = live device (ADC noise floor)
+PROBE_S = 2.5          # shotgun decision window
+EARLY_WATCHDOG_S = 5.0
+EARLY_MIN_DELIVERED_S = 2.0
+SILENCE_PEAK = 3       # int16; below this the device is emitting digital zeros
 
 
 @dataclass
@@ -39,6 +43,7 @@ class CaptureInfo:
     stopped_at: float = 0.0
     error: str | None = None
     warnings: list = None
+    mic_switched_from: str | None = None
 
 
 def default_mic_name() -> str | None:
@@ -72,16 +77,15 @@ def _resample(mono: np.ndarray, src_rate: int, dst_rate: int = ARCHIVE_RATE) -> 
 
 def default_capture_endpoint_name() -> str | None:
     """The endpoint other apps record from: Windows default capture device
-    (MMDevice API, eCapture/eConsole). PortAudio's own hostapi default can
-    point at a different endpoint entirely — that mismatch was incident
-    2026.09.18-1905 (browser heard the mic, we opened a silent one)."""
+    (MMDevice API). Communications role first — Chrome and call apps record
+    from it, and it tracks newly plugged headsets faster. PortAudio's own
+    hostapi default can point at a different endpoint entirely (incident
+    2026.09.18-1905)."""
     try:
         from comtypes import CLSCTX_ALL, CoCreateInstance
         from pycaw.constants import CLSID_MMDeviceEnumerator, EDataFlow, ERole
         from pycaw.pycaw import IMMDeviceEnumerator, AudioUtilities
         enum = CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, CLSCTX_ALL)
-        # communications first: Chrome and call apps record from the
-        # communications default, which tracks newly plugged headsets faster
         for role in (ERole.eCommunications, ERole.eConsole):
             try:
                 d = enum.GetDefaultAudioEndpoint(EDataFlow.eCapture.value, role.value)
@@ -138,58 +142,110 @@ def select_mic_device(prefer: str | None = None):
     return None
 
 
-def _wasapi_default_input_legacy():
-    """(device_index, rate) of the WASAPI default input, or None.
-
-    The MME-default input cannot be trusted: Bluetooth hands-free mics are
-    exposed there at fake rates (44100) while the device truly runs at
-    16000, and frames silently go missing. WASAPI reports and delivers its
-    mix format exactly.
-    """
+def _active_capture_devices():
+    """[(index, rate, name)] of WASAPI inputs Windows lists as ACTIVE, or
+    None when the enumeration cannot be read (caller then opens just the
+    default endpoint)."""
     try:
-        wasapi = next(
-            (i for i, a in enumerate(sd.query_hostapis())
-             if "WASAPI" in a["name"].upper()), None)
-        if wasapi is None:
-            return None
-        idx = int(sd.query_hostapis(wasapi)["default_input_device"])
-        if idx < 0:
-            return None
-        dev = sd.query_devices(idx)
-        if dev["max_input_channels"] < 1:
-            return None
-        return idx, int(dev["default_samplerate"])
+        from comtypes import CLSCTX_ALL, CoCreateInstance
+        from pycaw.constants import CLSID_MMDeviceEnumerator, EDataFlow
+        from pycaw.pycaw import IMMDeviceEnumerator, AudioUtilities
+        enum = CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, CLSCTX_ALL)
+        coll = enum.EnumAudioEndpoints(EDataFlow.eCapture.value, 1)  # ACTIVE
+        active = [AudioUtilities.CreateDevice(coll.Item(i)).FriendlyName
+                  for i in range(coll.GetCount())]
     except Exception:
         return None
+    wasapi = next((i for i, a in enumerate(sd.query_hostapis())
+                   if "WASAPI" in a["name"].upper()), None)
+    if wasapi is None:
+        return None
+    out = []
+    for i, d in enumerate(sd.query_devices()):
+        if (d["hostapi"] == wasapi and d["max_input_channels"] > 0
+                and any(_names_match(d["name"], a) for a in active)):
+            out.append((i, int(d["default_samplerate"]), d["name"]))
+    return out
+
+
+class _MicLeg:
+    """One open capture stream: own mono file, frame/peak counters, and a
+    ring buffer so the winner's first seconds can be replayed into the
+    live-transcription tap after the decision."""
+
+    def __init__(self, recorder, index: int, rate: int, name: str):
+        self.recorder = recorder
+        self.index, self.rate, self.name = index, rate, name
+        self.frames = 0
+        self.peak = 0
+        self.ring: list[np.ndarray] = []
+        self.sf = sf.SoundFile(
+            str(recorder._tmp(f".mic{index}")), mode="w",
+            samplerate=rate, channels=1, subtype="PCM_16")
+        self.stream = None
+
+    @property
+    def file(self) -> Path:
+        return Path(self.sf.name)
+
+    def open(self) -> None:
+        self.stream = sd.InputStream(
+            device=self.index, samplerate=self.rate, channels=1,
+            dtype=DTYPE, callback=self._cb, blocksize=4096)
+        self.stream.start()
+
+    def _cb(self, indata, frames, time_info, status):
+        try:
+            self.sf.write(indata)
+            self.frames += len(indata)
+            self.peak = max(self.peak, int(np.abs(indata.astype(np.int32)).max()))
+        except Exception as e:
+            self.recorder.error = f"mic write failed: {e}"
+            return
+        r = self.recorder
+        if r._mic_active is self and r.mic_tap is not None:
+            try:
+                r.mic_tap(indata.copy(), self.rate)
+            except Exception:
+                pass  # a tap bug must never disturb the archive write
+        elif r._mic_active is None:
+            self.ring.append(indata.copy())
+
+    def close(self) -> None:
+        try:
+            if self.stream is not None:
+                self.stream.stop()
+                self.stream.close()
+        except Exception:
+            pass
+        try:
+            self.sf.close()
+        except Exception:
+            pass
 
 
 class StereoRecorder:
     def __init__(self, out_path: Path, mic_tap=None, mic_device=None,
                  on_warning=None):
         self.out_path = out_path
-        # mic_tap: optional callable fed every mic frame batch (int16, native
-        # rate) for live chunk transcription; assigned before start()
+        # mic_tap(frames, rate): live chunk transcription feed
         self.mic_tap = mic_tap
-        picked = select_mic_device(prefer=mic_device)
-        self._mic_pick = picked  # resolved once so tap and stream agree
+        self._mic_device_pref = mic_device
+        self.on_warning = on_warning
         self.info = CaptureInfo(
             mic_device=default_mic_name() or "unavailable",
             system_device=default_loopback_name() or "unavailable",
         )
-        if picked:
-            self.info.mic_rate = picked[1]
-            self.info.mic_device = picked[2]  # the endpoint actually opened
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
-        self._stream = None
-        self._sf_mic = None
+        self._mic_legs: list[_MicLeg] = []
+        self._mic_active: _MicLeg | None = None
+        self._mic_file: Path | None = None
+        self._mic_decision_timer: threading.Timer | None = None
         self._sf_sys = None
-        self._mic_frames = 0
         self._sys_frames = 0
-        self._early_warnings: list[str] = []
-        self._mic_peak = 0
         self._sys_peak = 0
-        self.on_warning = on_warning
+        self._early_warnings: list[str] = []
         self.error: str | None = None
 
     # -- public API ------------------------------------------------------------
@@ -197,7 +253,7 @@ class StereoRecorder:
         self.out_path.parent.mkdir(parents=True, exist_ok=True)
         self.info.started_at = time.time()
         # loopback init (PyAudio + WASAPI open) takes a few hundred ms on
-        # its own thread; start it first so it overlaps the mic stream open
+        # its own thread; start it first so it overlaps the mic opens
         self._start_loopback()
         self._start_mic()
         threading.Thread(target=self._early_watchdog, name="capture-watchdog",
@@ -205,87 +261,160 @@ class StereoRecorder:
 
     def stop(self) -> CaptureInfo:
         self._stop.set()
-        if self._stream is not None:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception:
-                pass
+        if self._mic_active is None and self._mic_legs:
+            self._decide_mic()  # recording shorter than the probe window
+        for leg in self._mic_legs:
+            leg.close()
+        if self._mic_decision_timer is not None:
+            self._mic_decision_timer.cancel()
         for t in self._threads:
             t.join(timeout=5)
         self.info.stopped_at = time.time()
         self.info.error = self.error
+        mic_frames = self._mic_active.frames if self._mic_active else 0
+        mic_peak = self._mic_active.peak if self._mic_active else 0
+        mic_opened = self._mic_active is not None
         self.info.warnings = self._early_warnings + capture_warnings(
-            mic_frames=self._mic_frames, mic_rate=self.info.mic_rate or ARCHIVE_RATE,
+            mic_frames=mic_frames, mic_rate=self.info.mic_rate or ARCHIVE_RATE,
             sys_frames=self._sys_frames, sys_rate=self.info.system_rate or ARCHIVE_RATE,
             wall_s=self.info.stopped_at - self.info.started_at,
-            mic_opened=self._stream is not None,
+            mic_opened=mic_opened,
             sys_opened=self._sf_sys is not None,
-            mic_peak=self._mic_peak, sys_peak=self._sys_peak)
-        # close the capture-side files first: on Windows a file cannot be
-        # read/removed while a SoundFile still holds it open
-        for s in (self._sf_mic, self._sf_sys):
-            try:
-                if s is not None and not s.closed:
-                    s.close()
-            except Exception:
-                pass
+            mic_peak=mic_peak, sys_peak=self._sys_peak)
         self._merge()
         return self.info
 
-    # -- capture sides -----------------------------------------------------------
+    # -- mic: shotgun ------------------------------------------------------------
     def _start_mic(self):
-        try:
-            dev = sd.query_devices(kind="input")
-            rate = int(dev["default_samplerate"])
-        except Exception:
-            rate = ARCHIVE_RATE
-        device = None
-        if self._mic_pick:
-            device, rate = self._mic_pick[0], self._mic_pick[1]
-        logging.getLogger(__name__).info(
-            "opening mic stream: endpoint=%r rate=%s", self.info.mic_device, rate)
-        self._sf_mic = sf.SoundFile(
-            str(self._tmp(".mic")), mode="w", samplerate=rate,
-            channels=1, subtype="PCM_16",
-        )
-        self.info.mic_rate = rate
+        pick = select_mic_device(prefer=self._mic_device_pref)
+        active = None if self._mic_device_pref else _active_capture_devices()
 
-        def cb(indata, frames, time_info, status):
-            try:
-                self._sf_mic.write(indata)
-                self._mic_frames += len(indata)
-                self._mic_peak = max(self._mic_peak, int(np.abs(indata.astype(np.int32)).max()))
-            except Exception as e:
-                self.error = f"mic write failed: {e}"
-            if self.mic_tap is not None:
+        if pick and active and len(active) > 1:
+            # shotgun: default endpoint first, then every other active input
+            specs = [pick] + [a for a in active if a[0] != pick[0]]
+            for index, rate, name in specs:
+                leg = _MicLeg(self, index, rate, name)
                 try:
-                    self.mic_tap(indata.copy())
-                except Exception:
-                    pass  # a tap bug must never disturb the archive write
+                    leg.open()
+                except Exception as e:
+                    logging.getLogger(__name__).warning(
+                        "mic leg %r failed to open: %s", name, e)
+                    try:
+                        leg.sf.close()
+                        leg.file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    continue
+                self._mic_legs.append(leg)
+                logging.getLogger(__name__).info(
+                    "mic leg opened: %r @%s", name, rate)
+            if not self._mic_legs:
+                self.info.mic_device = "unavailable (all legs failed to open)"
+                return
+            self.info.mic_rate = self._mic_legs[0].rate
+            self._mic_decision_timer = threading.Timer(PROBE_S, self._decide_mic)
+            self._mic_decision_timer.daemon = True
+            self._mic_decision_timer.start()
+            logging.getLogger(__name__).info(
+                "shotgun: %d mic candidates, decision in %.1fs",
+                len(self._mic_legs), PROBE_S)
             return
 
-
+        # single-device path (pinned, one active input, or enumeration unreadable)
+        if pick is None:
+            self.info.mic_device = "unavailable (no capture endpoint)"
+            return
+        index, rate, name = pick
+        leg = _MicLeg(self, index, rate, name)
         try:
-            self._stream = sd.InputStream(
-                device=device, samplerate=rate, channels=1,
-                dtype=DTYPE, callback=cb, blocksize=4096,
-            )
-            self._stream.start()
-            logging.getLogger(__name__).info("mic stream started")
+            leg.open()
         except Exception:
             # WASAPI endpoint can refuse (exclusive-mode hold, profile
             # switch); fall back to the PortAudio default rather than
             # losing the microphone entirely
             try:
-                self._stream = sd.InputStream(
-                    samplerate=rate, channels=1, dtype=DTYPE, callback=cb
-                )
-                self._stream.start()
+                leg = _MicLeg(self, None, rate, name)
+                leg.open()
             except Exception as e:
                 self.info.mic_device = f"unavailable ({e})"
-                self._stream = None
+                try:
+                    leg.sf.close()
+                    leg.file.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return
+        self._mic_legs = [leg]
+        self._mic_active = leg
+        self._mic_file = leg.file
+        self.info.mic_device = name
+        self.info.mic_rate = rate
+        logging.getLogger(__name__).info(
+            "opening mic stream: endpoint=%r rate=%s", name, rate)
 
+    def _decide_mic(self):
+        if self._mic_active is not None or not self._mic_legs:
+            return
+        legs = self._mic_legs
+        primary = legs[0]
+        if primary.peak >= LIVE_PEAK_FLOOR:
+            winner = primary
+        else:
+            best = max(legs[1:], key=lambda l: l.peak, default=None)
+            if best is not None and best.peak >= LIVE_PEAK_FLOOR:
+                winner = best
+                self.info.mic_switched_from = primary.name
+                logging.getLogger(__name__).info(
+                    "mic failover: %r silent -> switching to %r",
+                    primary.name, best.name)
+            else:
+                winner = primary
+                msg = ("all capture endpoints are silent (synthetic zeros) — "
+                       "no live microphone found")
+                logging.getLogger(__name__).warning(msg)
+                self._early_warnings.append(msg)
+                if self.on_warning is not None:
+                    try:
+                        self.on_warning(msg)
+                    except Exception:
+                        pass
+        for leg in legs:
+            if leg is winner:
+                continue
+            leg.close()
+            leg.file.unlink(missing_ok=True)
+        self._mic_active = winner
+        self._mic_file = winner.file
+        self.info.mic_device = winner.name
+        self.info.mic_rate = winner.rate
+        # replay the winner's buffered first seconds into the live tap
+        if self.mic_tap is not None:
+            for fr in winner.ring:
+                try:
+                    self.mic_tap(fr, winner.rate)
+                except Exception:
+                    break
+        winner.ring = []
+
+    def _early_watchdog(self) -> None:
+        time.sleep(EARLY_WATCHDOG_S)
+        if self._stop.is_set():
+            return
+        active = self._mic_active
+        msg = early_capture_warning(
+            active.frames if active else 0,
+            self.info.mic_rate or ARCHIVE_RATE,
+            EARLY_WATCHDOG_S, mic_opened=active is not None,
+            mic_peak=active.peak if active else 0)
+        if msg:
+            logging.getLogger(__name__).warning(msg)
+            self._early_warnings.append(msg)
+            if self.on_warning is not None:
+                try:
+                    self.on_warning(msg)
+                except Exception:
+                    pass
+
+    # -- loopback ------------------------------------------------------------------
     def _start_loopback(self):
         def run():
             p = pyaudio.PyAudio()
@@ -343,9 +472,8 @@ class StereoRecorder:
     def _tmp(self, suffix: str) -> Path:
         return self.out_path.with_name(self.out_path.stem + suffix + ".wav")
 
-    def _read_tmp(self, suffix: str) -> tuple[np.ndarray, int]:
-        p = self._tmp(suffix)
-        if not p.exists():
+    def _read_file(self, p: Path) -> tuple[np.ndarray, int]:
+        if p is None or not p.exists():
             return np.zeros(0, dtype=np.float32), ARCHIVE_RATE
         try:
             data, rate = sf.read(str(p), dtype="float32", always_2d=False)
@@ -357,27 +485,7 @@ class StereoRecorder:
         finally:
             p.unlink(missing_ok=True)
 
-    def _early_watchdog(self) -> None:
-        time.sleep(EARLY_WATCHDOG_S)
-        if self._stop.is_set():
-            return
-        msg = early_capture_warning(
-            self._mic_frames, self.info.mic_rate or ARCHIVE_RATE,
-            EARLY_WATCHDOG_S, mic_opened=self._stream is not None,
-            mic_peak=self._mic_peak)
-        if msg:
-            logging.getLogger(__name__).warning(msg)
-            self._early_warnings.append(msg)
-            if self.on_warning is not None:
-                try:
-                    self.on_warning(msg)
-                except Exception:
-                    pass
-
     def _merge(self):
-        logging.getLogger(__name__).info(
-            "merging tracks: mic %s frames @%s, sys %s frames @%s",
-            self._mic_frames, self.info.mic_rate, self._sys_frames, self.info.system_rate)
         """Resample both mono tracks to the archive rate and interleave.
 
         Both streams start within ~100 ms of each other; for v1 the tracks
@@ -385,8 +493,8 @@ class StereoRecorder:
         macOS implementation.
         """
         try:
-            mic, mic_rate = self._read_tmp(".mic")
-            sys_l, sys_rate = self._read_tmp(".sys")
+            mic, mic_rate = self._read_file(self._mic_file)
+            sys_l, sys_rate = self._read_file(self._tmp(".sys"))
             left = _resample(mic, mic_rate)
             right = _resample(sys_l, sys_rate)
             n = max(len(left), len(right))
@@ -400,18 +508,11 @@ class StereoRecorder:
             interleaved[:, 0] = left[:n]
             interleaved[:, 1] = right[:n]
             sf.write(str(self.out_path), interleaved, ARCHIVE_RATE, subtype="PCM_16")
+            logging.getLogger(__name__).info(
+                "merged archive: mic %r (%s frames @%s), sys %s frames @%s",
+                self.info.mic_device, len(mic), mic_rate, len(sys_l), sys_rate)
         except Exception as e:
             self.error = f"merge failed: {e}"
-        finally:
-            for s in (self._sf_mic, self._sf_sys):
-                try:
-                    if s is not None and not s.closed:
-                        s.close()
-                except Exception:
-                    pass
-
-
-SILENCE_PEAK = 3  # int16; below this the device is emitting digital zeros
 
 
 def capture_warnings(mic_frames: int, mic_rate: int,
@@ -421,11 +522,12 @@ def capture_warnings(mic_frames: int, mic_rate: int,
                      sys_opened: bool = True,
                      mic_peak: int | None = None,
                      sys_peak: int | None = None) -> list[str]:
-    """Flag streams that stalled: opened but delivered <50% of wall time.
+    """Flag streams that stalled or delivered synthetic silence.
 
-    A stream that dies mid-recording (e.g. a virtual mic that needs its
-    host app) otherwise leaves an archive that looks valid but is mostly
-    silence; surface it in meta.json instead of discovering it by ear.
+    A stream that dies mid-recording (virtual mic without its host app)
+    leaves an archive that looks valid but is mostly silence; a synthetic-
+    silence driver (WO Mic) delivers zeros on schedule. Surface both in
+    meta.json instead of discovering them by ear.
     """
     warns: list[str] = []
     if wall_s <= 0:
@@ -436,16 +538,13 @@ def capture_warnings(mic_frames: int, mic_rate: int,
         warns.append(f"mic delivered only {mic_s:.1f}s of {wall_s:.0f}s recording — check the microphone device")
     if sys_opened and sys_s < 0.5 * wall_s:
         warns.append(f"system loopback delivered only {sys_s:.1f}s of {wall_s:.0f}s recording")
-    # frame counters alone miss drivers that emit synthetic silence (WO Mic):
+    # frame counters alone miss drivers that emit synthetic silence:
     # frames arrive on schedule, but every sample is zero
     if mic_opened and mic_peak is not None and mic_s >= 0.5 * wall_s and mic_peak < SILENCE_PEAK:
         warns.append("mic delivered only digital silence — the device is not actually streaming audio")
     if sys_opened and sys_peak is not None and sys_s >= 0.5 * wall_s and sys_peak < SILENCE_PEAK:
         warns.append("system loopback delivered only digital silence")
     return warns
-
-EARLY_WATCHDOG_S = 5.0
-EARLY_MIN_DELIVERED_S = 2.0
 
 
 def early_capture_warning(mic_frames: int, mic_rate: int, elapsed_s: float,

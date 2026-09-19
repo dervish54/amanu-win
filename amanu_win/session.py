@@ -56,6 +56,21 @@ class SessionManager:
         self._model = None
         self._live: LiveMicTranscriber | None = None
 
+    def _tap_feed(self, frames, rate) -> None:
+        if self._live is None:
+            stream_cfg = self._streaming_config()
+            lang = self.config.transcription.get("language", "auto")
+            self._live = LiveMicTranscriber(
+                sample_rate=rate,
+                model_getter=self._get_model,
+                language=None if lang == "auto" else lang,
+                first_s=stream_cfg.get("first_s", 10.0),
+                stride_s=stream_cfg.get("stride_s", 8.0),
+                overlap_s=stream_cfg.get("overlap_s", 2.0),
+                log=self.log,
+            )
+        self._live.feed(frames)
+
     def _on_capture_warning(self, msg: str) -> None:
         self.capture_warnings.append(msg)
         self._notify()
@@ -96,18 +111,9 @@ class SessionManager:
             mic_device=self.config.data.get("mic_device"),
             on_warning=self._on_capture_warning)
         if self._streaming_enabled():
-            stream_cfg = self._streaming_config()
-            lang = self.config.transcription.get("language", "auto")
-            self._live = LiveMicTranscriber(
-                sample_rate=self.recorder.info.mic_rate or 48000,
-                model_getter=self._get_model,
-                language=None if lang == "auto" else lang,
-                first_s=stream_cfg.get("first_s", 10.0),
-                stride_s=stream_cfg.get("stride_s", 8.0),
-                overlap_s=stream_cfg.get("overlap_s", 2.0),
-                log=self.log,
-            )
-            self.recorder.mic_tap = self._live.feed
+            # the live transcriber is created on the first frames: with the
+            # shotgun start the winning mic's rate is unknown until the probe
+            self.recorder.mic_tap = self._tap_feed
         self.recorder.start()
         self.log(f"recording → {self.session_dir}")
         return self.session_dir
