@@ -65,3 +65,14 @@ def test_mark_setup_complete(cfg):
     setup_mod.mark_setup_complete(c)
     on_disk = json.loads(cfg.saved.read_text(encoding="utf-8"))
     assert on_disk["setup_complete"] is True
+
+
+def test_apply_install_choices_marks_setup_incomplete(cfg, tmp_path):
+    bundle = tmp_path / "b2"
+    bundle.mkdir()
+    (bundle / "install-choices.json").write_text(
+        json.dumps({"tier": "balanced", "ollama": True}), encoding="utf-8")
+    c = cfg()
+    assert setup_mod.needs_first_run(c) is False
+    setup_mod.apply_install_choices(c, bundle)
+    assert c.data["setup_complete"] is False

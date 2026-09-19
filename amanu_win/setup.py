@@ -148,6 +148,9 @@ def apply_install_choices(config: Config, bundle_dir: Path) -> bool:
         config.data.setdefault("summary", {})["enabled"] = data["ollama"]
     if data.get("recordings_dir"):
         config.data["recordings_dir"] = data["recordings_dir"]
+    # a choices file exists only right after a fresh install: that IS the
+    # first-run gate (existing configs carry no setup_complete flag at all)
+    config.data["setup_complete"] = False
     config.save()
     choices.unlink()
     return True
