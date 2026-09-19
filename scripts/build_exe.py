@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def build(venv_python: Path, out: Path, name: str = "amanu") -> Path:
     cmd = [
         str(venv_python), "-m", "PyInstaller",
-        "--noconfirm", "--clean", "--onedir",
+        "--noconfirm", "--clean", "--onedir", "--windowed",
         "--name", name,
         "--distpath", str(out),
         "--workpath", str(out / "build"),

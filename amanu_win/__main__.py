@@ -49,6 +49,20 @@ def doctor(config: Config) -> int:
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if getattr(sys, "frozen", False) and argv:
+        # windowed exe has no console; when used as a CLI, borrow the caller's.
+        # Rebind via GetStdHandle (not CONOUT$) so output survives redirection.
+        import ctypes
+        import msvcrt
+        import os
+        if ctypes.windll.kernel32.AttachConsole(-1):  # ATTACH_PARENT_PROCESS
+            k32 = ctypes.windll.kernel32
+            sys.stdout = os.fdopen(msvcrt.open_osfhandle(
+                k32.GetStdHandle(-11), os.O_WRONLY | os.O_TEXT),
+                "w", encoding="utf-8", buffering=1)
+            sys.stderr = os.fdopen(msvcrt.open_osfhandle(
+                k32.GetStdHandle(-12), os.O_WRONLY | os.O_TEXT),
+                "w", encoding="utf-8", buffering=1)
     from .applog import setup_logging
     setup_logging(config_mod.CONFIG_PATH.parent)
     config = Config.load()

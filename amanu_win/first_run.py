@@ -33,6 +33,7 @@ class FirstRunWindow:
         root = tk.Tk()
         root.title("Amanu — первоначальная настройка")
         root.configure(bg=BG)
+        root.minsize(440, 0)
         root.attributes("-topmost", True)
         self._root = root
 
@@ -45,6 +46,7 @@ class FirstRunWindow:
         if self.cfg.summary.get("enabled", True):
             rows.append(("ollama", "Ollama + модель сводок (~5 ГБ)"))
         rows.append(("mic", "Проверка микрофона"))
+        self._texts = dict(rows)
         for key, text in rows:
             lbl = tk.Label(root, text="…  " + text, fg=FG, bg=BG,
                            font=("Segoe UI", 9), anchor="w")
@@ -100,8 +102,9 @@ class FirstRunWindow:
                 if kind == "step":
                     mark = {"start": "…", "done": "✓", "failed": "✗"}[b]
                     if a in self._rows:
-                        lbl = self._rows[a]
-                        lbl.config(text=f"{mark}  " + lbl.cget("text")[4:])
+                        # rebuild from the stored base text — slicing the
+                        # rendered string eats one letter per update
+                        self._rows[a].config(text=f"{mark}  " + self._texts[a])
                 elif kind == "finish":
                     tk.Label(self._root,
                              text="Готово! Наведите курсор на панель — там запись.",

@@ -62,3 +62,24 @@ def test_first_run_window_lifecycle_subprocess():
     r = subprocess.run([sys.executable, "-X", "utf8", "-c", script],
                        capture_output=True, text=True, timeout=120)
     assert "OK" in r.stdout, r.stdout + r.stderr
+
+
+def test_row_labels_keep_full_text_after_status_updates():
+    # regression: status update sliced [4:] but the mark prefix is 3 chars —
+    # the first letter of every row was eaten ("… одель распознавания")
+    script = SCRIPT.replace("%REPO%", str(REPO).replace("\\", "/"))
+    script = script.replace(
+        "s.run_setup = lambda *a, **k: {'whisper': 'cached'}",
+        "def _rs(cfg, startup=True, steps=(), progress=None, log=None):\n"
+        "    progress('whisper', 'start')\n"
+        "    progress('whisper', 'done')\n"
+        "    return {'whisper': 'cached'}\n"
+        "s.run_setup = _rs")
+    script = script.replace("print('window alive, rows:', sorted(w._rows))", """
+time.sleep(1)  # let stubbed steps finish and update labels
+lbl = w._rows['whisper'].cget('text')
+assert lbl[3:].startswith('Модель распознавания'), lbl
+print('window alive, rows:', sorted(w._rows))""")
+    r = subprocess.run([sys.executable, "-X", "utf8", "-c", script],
+                       capture_output=True, text=True, timeout=120)
+    assert "OK" in r.stdout, r.stdout + r.stderr
