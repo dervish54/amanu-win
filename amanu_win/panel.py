@@ -150,12 +150,14 @@ class FloatingPanel:
             return
         self._expanded = expand
         x, y = self._root.winfo_x(), self._root.winfo_y()
+        # bar stays anchored at the top; the body grows downward so a panel
+        # near the screen top never slides off-screen
         if expand:
             self._body.pack(fill="both", expand=True)
-            self._root.geometry(f"{PANEL_W}x{PANEL_H}+{x}+{y - PANEL_H + BAR_H}")
+            self._root.geometry(f"{PANEL_W}x{PANEL_H}+{x}+{y}")
         else:
             self._body.pack_forget()
-            self._root.geometry(f"{BAR_W}x{BAR_H}+{x}+{y + PANEL_H - BAR_H}")
+            self._root.geometry(f"{BAR_W}x{BAR_H}+{x}+{y}")
 
     def _drag_start(self, e):
         self._drag = (e.x_root - self._root.winfo_x(), e.y_root - self._root.winfo_y())
