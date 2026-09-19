@@ -15,6 +15,8 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\amanu.exe
 
+CloseApplications=force
+CloseApplicationsFilter=amanu.exe
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
