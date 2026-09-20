@@ -184,3 +184,29 @@ def register_cli_shim(bin_dir: Path, target_cmd: str | None = None) -> Path:
                           f'"{sys.executable}" -m amanu_win %*')
     shim.write_text(f"@echo off\r\n{target_cmd}\r\n", encoding="ascii")
     return shim
+
+
+def close_ollama_welcome() -> bool:
+    """Close windows titled 'Ollama' (the Welcome screen the winget install
+    launches). True if at least one was closed. Title-matched because the
+    window belongs to the user's desktop session, not to our process."""
+    import ctypes
+    from ctypes import wintypes
+
+    found = []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                     wintypes.LPARAM)
+
+    @WNDENUMPROC
+    def _cb(hwnd, lparam):
+        if ctypes.windll.user32.IsWindowVisible(hwnd):
+            buf = ctypes.create_unicode_buffer(256)
+            ctypes.windll.user32.GetWindowTextW(hwnd, buf, 256)
+            if buf.value.strip().lower() == "ollama":
+                found.append(hwnd)
+        return True
+
+    ctypes.windll.user32.EnumWindows(_cb, 0)
+    for hwnd in found:
+        ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+    return bool(found)

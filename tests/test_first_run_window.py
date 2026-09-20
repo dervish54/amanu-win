@@ -83,3 +83,20 @@ print('window alive, rows:', sorted(w._rows))""")
     r = subprocess.run([sys.executable, "-X", "utf8", "-c", script],
                        capture_output=True, text=True, timeout=120)
     assert "OK" in r.stdout, r.stdout + r.stderr
+
+
+def test_finish_screen_waits_for_user():
+    # UX: the window must not vanish on its own — the user needs a clear
+    # "done, you can use it" screen that stays until they dismiss it
+    script = SCRIPT.replace("%REPO%", str(REPO).replace("\\", "/"))
+    script = script.replace("print('window alive, rows:', sorted(w._rows))", """
+deadline2 = time.monotonic() + 15
+while time.monotonic() < deadline2 and getattr(w, '_done_button', None) is None:
+    time.sleep(0.1)
+assert getattr(w, '_done_button', None) is not None, 'no dismiss button'
+time.sleep(3.5)  # the old behavior auto-closed after 3s
+assert w.alive, 'finish screen closed itself — no completion feedback'
+print('window alive, rows:', sorted(w._rows))""")
+    r = subprocess.run([sys.executable, "-X", "utf8", "-c", script],
+                       capture_output=True, text=True, timeout=120)
+    assert "OK" in r.stdout, r.stdout + r.stderr

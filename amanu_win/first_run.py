@@ -88,6 +88,10 @@ class FirstRunWindow:
             ok = select_mic_device() is not None
             self._q.put(("step", "mic", "done" if ok else "failed"))
             setup_mod.mark_setup_complete(self.cfg)
+            if "ollama" in steps:
+                # the winget install launches Ollama's Welcome screen; the
+                # user did not ask for it
+                setup_mod.close_ollama_welcome()
             self._q.put(("finish", None, None))
         except Exception as e:  # network/disk failures land here
             self._q.put(("error", str(e), None))
@@ -106,11 +110,22 @@ class FirstRunWindow:
                         # rendered string eats one letter per update
                         self._rows[a].config(text=f"{mark}  " + self._texts[a])
                 elif kind == "finish":
-                    tk.Label(self._root,
-                             text="Готово! Наведите курсор на панель — там запись.",
+                    tk.Label(self._root, text="Готово! Amanu работает в трее.",
                              fg="#2ea043", bg=BG,
-                             font=("Segoe UI", 9)).pack(padx=14, pady=4)
-                    self._root.after(3000, self.close)
+                             font=("Segoe UI", 10, "bold")).pack(padx=14,
+                                                                 pady=(8, 2))
+                    tk.Label(self._root,
+                             text="Ctrl+Alt+R — запись и остановка. "
+                                  "Наведите курсор на панель — там те же действия.",
+                             fg=FG, bg=BG, font=("Segoe UI", 9),
+                             wraplength=400, justify="left").pack(padx=14,
+                                                                  pady=2)
+                    # stays until the user says so: a vanished window is not
+                    # completion feedback
+                    self._done_button = tk.Button(
+                        self._root, text="Начать пользоваться",
+                        command=self.close)
+                    self._done_button.pack(pady=(6, 10))
                 elif kind == "error":
                     tk.Label(self._root, text=f"Ошибка: {a}",
                              fg="#e06c75", bg=BG, font=("Segoe UI", 8),

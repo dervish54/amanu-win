@@ -19,3 +19,12 @@ def test_choices_json_shape_written_by_iss():
         assert key in text
     for tier in ("accurate", "balanced", "compact"):
         assert tier in text
+
+
+def test_uninstall_data_dialog_after_removal():
+    text = ISS.read_text(encoding="utf-8-sig")
+    assert "usPostUninstall" in text, "data question must come after file removal"
+    assert "CreateCustomForm" in text, "per-component checkbox form expected"
+    for label in ("models", "ollama", "recordings", "config"):
+        assert label in text.lower()
+    assert "InitializeUninstall" not in text, "old pre-uninstall prompt must go"

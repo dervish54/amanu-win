@@ -153,19 +153,115 @@ begin
   end;
 end;
 
-function InitializeUninstall: Boolean;
-var
-  models, rec: string;
+function PosFrom(const Sub, S: string; From: Integer): Integer;
 begin
-  Result := True;
-  if UninstallSilent then
-    exit;  // silent uninstall never deletes user data and never asks
-  models := ExpandConstant('{localappdata}\amanu\models');
-  rec := ExpandConstant('{userdocs}\Amanu Recordings');
-  if MsgBox('Удалить также скачанные модели (' + models + ') и папку записей (' + rec + ')?',
-            mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+  Result := Pos(Sub, Copy(S, From, Length(S)));
+  if Result > 0 then
+    Result := Result + From - 1;
+end;
+
+function JsonValue(const Json, Key: string): string;
+var
+  p, a, b: Integer;
+begin
+  Result := '';
+  p := Pos('"' + Key + '"', Json);
+  if p = 0 then
+    exit;
+  p := PosFrom(':', Json, p);
+  a := PosFrom('"', Json, p + 1);
+  b := PosFrom('"', Json, a + 1);
+  Result := Copy(Json, a + 1, b - a - 1);
+  StringChange(Result, '\\', '\');
+end;
+
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  CfgPath, CfgJson: string;
+  CfgAnsi: AnsiString;
+  ModelsDir, RecDir, OllamaDir: string;
+  DataForm: TSetupForm;
+  ChkModels, ChkOllama, ChkRec, ChkCfg: TNewCheckBox;
+  Btn: TNewButton;
+  Y: Integer;
+begin
+  { ask AFTER the program files are gone: the standard confirmation covers
+    the bundle, this form covers only user data; silent uninstall deletes
+    nothing and asks nothing }
+  if (CurUninstallStep <> usPostUninstall) or UninstallSilent then
+    exit;
+
+  CfgPath := GetEnv('USERPROFILE') + '\.config\amanu\config.json';
+  ModelsDir := ExpandConstant('{localappdata}\amanu\models');
+  RecDir := ExpandConstant('{userdocs}\Amanu Recordings');
+  if LoadStringFromFile(CfgPath, CfgAnsi) then
   begin
-    DelTree(models, True, True, True);
-    DelTree(rec, True, True, True);
+    CfgJson := String(CfgAnsi);
+    if JsonValue(CfgJson, 'models_dir') <> '' then
+      ModelsDir := JsonValue(CfgJson, 'models_dir');
+    if JsonValue(CfgJson, 'recordings_dir') <> '' then
+      RecDir := JsonValue(CfgJson, 'recordings_dir');
   end;
+  OllamaDir := GetEnv('USERPROFILE') + '\.ollama';
+
+  DataForm := CreateCustomForm(ScaleX(560), ScaleY(220), False, True);
+  DataForm.Caption := 'Amanu — удаление данных';
+  DataForm.ClientWidth := 560;
+  DataForm.ClientHeight := 220;
+
+  with TNewStaticText.Create(DataForm) do
+  begin
+    Parent := DataForm;
+    Left := 12; Top := 10; Width := 536;
+    Caption := 'Программа удалена. Отметьте, какие данные также удалить (по умолчанию всё сохраняется):';
+    WordWrap := True;
+  end;
+
+  Y := 44;
+  ChkModels := TNewCheckBox.Create(DataForm);
+  ChkModels.Parent := DataForm;
+  ChkModels.Left := 16; ChkModels.Top := Y; ChkModels.Width := 528;
+  ChkModels.Caption := 'Модели распознавания (' + ModelsDir + ')';
+  ChkModels.Checked := False;
+
+  Y := Y + 26;
+  ChkOllama := TNewCheckBox.Create(DataForm);
+  ChkOllama.Parent := DataForm;
+  ChkOllama.Left := 16; ChkOllama.Top := Y; ChkOllama.Width := 528;
+  ChkOllama.Caption := 'Данные Ollama и модель сводок (' + OllamaDir +
+    '; саму программу Ollama удалите через «Приложения»)';
+  ChkOllama.Checked := False;
+
+  Y := Y + 26;
+  ChkRec := TNewCheckBox.Create(DataForm);
+  ChkRec.Parent := DataForm;
+  ChkRec.Left := 16; ChkRec.Top := Y; ChkRec.Width := 528;
+  ChkRec.Caption := 'Записи и расшифровки (' + RecDir + ')';
+  ChkRec.Checked := False;
+
+  Y := Y + 26;
+  ChkCfg := TNewCheckBox.Create(DataForm);
+  ChkCfg.Parent := DataForm;
+  ChkCfg.Left := 16; ChkCfg.Top := Y; ChkCfg.Width := 528;
+  ChkCfg.Caption := 'Настройки (' + CfgPath + ')';
+  ChkCfg.Checked := False;
+
+  Btn := TNewButton.Create(DataForm);
+  Btn.Parent := DataForm;
+  Btn.Left := 560 - 12 - 75; Btn.Top := 220 - 12 - 23;
+  Btn.Caption := 'OK';
+  Btn.Default := True;
+  Btn.ModalResult := mrOk;
+
+  DataForm.ShowModal;
+
+  if ChkModels.Checked then
+    DelTree(ModelsDir, True, True, True);
+  if ChkOllama.Checked then
+    DelTree(OllamaDir, True, True, True);
+  if ChkRec.Checked then
+    DelTree(RecDir, True, True, True);
+  if ChkCfg.Checked then
+    DelTree(GetEnv('USERPROFILE') + '\.config\amanu', True, True, True);
 end;
