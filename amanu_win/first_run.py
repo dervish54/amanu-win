@@ -90,8 +90,10 @@ class FirstRunWindow:
             setup_mod.mark_setup_complete(self.cfg)
             if "ollama" in steps:
                 # the winget install launches Ollama's Welcome screen; the
-                # user did not ask for it
+                # user did not ask for it. Closing it quits the GUI app that
+                # also hosts the server — bring the server back up.
                 setup_mod.close_ollama_welcome()
+                setup_mod.ensure_ollama_server(self.cfg.summary["ollama_url"])
             self._q.put(("finish", None, None))
         except Exception as e:  # network/disk failures land here
             self._q.put(("error", str(e), None))

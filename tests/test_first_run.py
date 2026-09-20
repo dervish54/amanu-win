@@ -95,3 +95,18 @@ def test_choices_do_not_override_explicit_user_paths(tmp_path, monkeypatch):
     assert c.data["models_dir"] == "C:\\Wizard\\models"
     # tier/ollama always apply — the wizard is the explicit act of choosing
     assert c.data["transcription"]["model"] == "small"
+
+
+def test_ensure_ollama_server_starts_serve_when_ping_fails(monkeypatch):
+    started = []
+    monkeypatch.setattr(setup_mod, "_ollama_ping", lambda url: False)
+    monkeypatch.setattr(setup_mod.subprocess, "Popen",
+                        lambda *a, **k: started.append((a, k)) or None)
+    ok = setup_mod.ensure_ollama_server("http://localhost:11434", wait_s=0)
+    assert ok is False  # server still not answering (we never started it for real)
+    assert started and "serve" in started[0][0][0][1]
+
+
+def test_ensure_ollama_server_true_when_already_up(monkeypatch):
+    monkeypatch.setattr(setup_mod, "_ollama_ping", lambda url: True)
+    assert setup_mod.ensure_ollama_server("http://localhost:11434", wait_s=0) is True

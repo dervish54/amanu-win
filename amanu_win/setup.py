@@ -210,3 +210,34 @@ def close_ollama_welcome() -> bool:
     for hwnd in found:
         ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
     return bool(found)
+
+
+def _ollama_ping(url: str) -> bool:
+    import urllib.request
+    try:
+        urllib.request.urlopen(url + "/api/version", timeout=3)
+        return True
+    except Exception:
+        return False
+
+
+def ensure_ollama_server(url: str, wait_s: float = 15.0) -> bool:
+    """Server answering within wait_s. Closing Ollama's Welcome window
+    (close_ollama_welcome) quits the GUI app — and the server lives inside
+    it, so punctuation/summaries silently die. When ping fails, start
+    `ollama serve` ourselves, hidden and detached."""
+    import time
+    if _ollama_ping(url):
+        return True
+    flags = 0
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+    subprocess.Popen(["ollama", "serve"], creationflags=flags,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdin=subprocess.DEVNULL)
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if _ollama_ping(url):
+            return True
+        time.sleep(0.5)
+    return False
