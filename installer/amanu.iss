@@ -20,6 +20,9 @@ CloseApplicationsFilter=amanu.exe
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
+[Messages]
+russian.ConfirmUninstall=Удалить программу %1?%n%nБудут удалены только файлы самой программы. Модели, записи и настройки останутся на месте — следующим шагом вы сможете выбрать, что с ними сделать.
+
 [Files]
 Source: "{#BundleDir}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
@@ -205,51 +208,78 @@ begin
   end;
   OllamaDir := GetEnv('USERPROFILE') + '\.ollama';
 
-  DataForm := CreateCustomForm(ScaleX(560), ScaleY(220), False, True);
+  DataForm := CreateCustomForm(ScaleX(560), ScaleY(320), False, True);
   DataForm.Caption := 'Amanu — удаление данных';
   DataForm.ClientWidth := 560;
-  DataForm.ClientHeight := 220;
+  DataForm.ClientHeight := 320;
 
   with TNewStaticText.Create(DataForm) do
   begin
     Parent := DataForm;
-    Left := 12; Top := 10; Width := 536;
+    Left := 12; Top := 10; Width := 536; Height := 34;
     Caption := 'Программа удалена. Отметьте, какие данные также удалить (по умолчанию всё сохраняется):';
     WordWrap := True;
   end;
 
-  Y := 44;
+  Y := 52;
   ChkModels := TNewCheckBox.Create(DataForm);
   ChkModels.Parent := DataForm;
   ChkModels.Left := 16; ChkModels.Top := Y; ChkModels.Width := 528;
-  ChkModels.Caption := 'Модели распознавания (' + ModelsDir + ')';
+  ChkModels.Caption := 'Модели распознавания';
   ChkModels.Checked := False;
+  with TNewStaticText.Create(DataForm) do
+  begin
+    Parent := DataForm;
+    Left := 34; Top := Y + 18; Width := 510; Height := 16;
+    Caption := ModelsDir;
+    WordWrap := True;
+  end;
 
-  Y := Y + 26;
+  Y := Y + 44;
   ChkOllama := TNewCheckBox.Create(DataForm);
   ChkOllama.Parent := DataForm;
   ChkOllama.Left := 16; ChkOllama.Top := Y; ChkOllama.Width := 528;
-  ChkOllama.Caption := 'Данные Ollama и модель сводок (' + OllamaDir +
-    '; саму программу Ollama удалите через «Приложения»)';
+  ChkOllama.Caption := 'Данные Ollama и модель сводок';
   ChkOllama.Checked := False;
+  with TNewStaticText.Create(DataForm) do
+  begin
+    Parent := DataForm;
+    Left := 34; Top := Y + 18; Width := 510; Height := 16;
+    Caption := OllamaDir + ' (саму программу Ollama удалите через «Приложения»)';
+    WordWrap := True;
+  end;
 
-  Y := Y + 26;
+  Y := Y + 44;
   ChkRec := TNewCheckBox.Create(DataForm);
   ChkRec.Parent := DataForm;
   ChkRec.Left := 16; ChkRec.Top := Y; ChkRec.Width := 528;
-  ChkRec.Caption := 'Записи и расшифровки (' + RecDir + ')';
+  ChkRec.Caption := 'Записи и расшифровки';
   ChkRec.Checked := False;
+  with TNewStaticText.Create(DataForm) do
+  begin
+    Parent := DataForm;
+    Left := 34; Top := Y + 18; Width := 510; Height := 16;
+    Caption := RecDir;
+    WordWrap := True;
+  end;
 
-  Y := Y + 26;
+  Y := Y + 44;
   ChkCfg := TNewCheckBox.Create(DataForm);
   ChkCfg.Parent := DataForm;
   ChkCfg.Left := 16; ChkCfg.Top := Y; ChkCfg.Width := 528;
-  ChkCfg.Caption := 'Настройки (' + CfgPath + ')';
+  ChkCfg.Caption := 'Настройки';
   ChkCfg.Checked := False;
+  with TNewStaticText.Create(DataForm) do
+  begin
+    Parent := DataForm;
+    Left := 34; Top := Y + 18; Width := 510; Height := 16;
+    Caption := CfgPath;
+    WordWrap := True;
+  end;
 
   Btn := TNewButton.Create(DataForm);
   Btn.Parent := DataForm;
-  Btn.Left := 560 - 12 - 75; Btn.Top := 220 - 12 - 23;
+  Btn.Left := 560 - 12 - 75; Btn.Top := 320 - 12 - 23;
   Btn.Caption := 'OK';
   Btn.Default := True;
   Btn.ModalResult := mrOk;
