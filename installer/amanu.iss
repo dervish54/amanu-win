@@ -189,6 +189,16 @@ var
   Btn: TNewButton;
   Y: Integer;
 begin
+  { CloseApplications=force cannot be relied on for a windowless tray app
+    (verified live 2026-09-20: the process survived and its locked files
+    were skipped) — kill it ourselves before file removal }
+  if CurUninstallStep = usUninstall then
+  begin
+    Exec('taskkill.exe', '/F /IM amanu.exe', '', SW_HIDE, ewWaitUntilTerminated, Y);
+    Sleep(1500);
+    exit;
+  end;
+
   { ask AFTER the program files are gone: the standard confirmation covers
     the bundle, this form covers only user data; silent uninstall deletes
     nothing and asks nothing }
